@@ -20,6 +20,7 @@ Use this skill when an agent needs a repeatable Chrome DevTools MCP workflow wit
 - Reuse the same dedicated profile across sessions when persistent state matters.
 - Treat a mismatched debug endpoint as a blocker.
 - Do not silently fall back to the browser's default profile if the dedicated profile is required.
+- On macOS, launch or reuse Chrome in the background so DevTools MCP work does not steal focus from the user.
 
 ## Defaults
 

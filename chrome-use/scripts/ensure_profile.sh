@@ -85,9 +85,9 @@ open_existing_profile_url() {
   case "$os" in
     macos)
       if [[ -n "${CHROME_USE_CHROME_APP:-}" ]]; then
-        open -a "$CHROME_USE_CHROME_APP" "$START_URL" >/dev/null 2>&1 || true
+        open -g -a "$CHROME_USE_CHROME_APP" "$START_URL" >/dev/null 2>&1 || true
       else
-        open -a "Google Chrome" "$START_URL" >/dev/null 2>&1 || true
+        open -g -a "Google Chrome" "$START_URL" >/dev/null 2>&1 || true
       fi
       ;;
     linux)
@@ -106,14 +106,14 @@ launch_chrome() {
   case "$os" in
     macos)
       if [[ -n "${CHROME_USE_CHROME_APP:-}" ]]; then
-        open -na "$CHROME_USE_CHROME_APP" --args \
+        open -g -na "$CHROME_USE_CHROME_APP" --args \
           --user-data-dir="$PROFILE_DIR" \
           --remote-debugging-port="$DEBUG_PORT" \
           --no-first-run \
           --no-default-browser-check \
           "$START_URL" >>"$LOG_FILE" 2>&1
       else
-        open -na "Google Chrome" --args \
+        open -g -na "Google Chrome" --args \
           --user-data-dir="$PROFILE_DIR" \
           --remote-debugging-port="$DEBUG_PORT" \
           --no-first-run \

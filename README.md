@@ -15,6 +15,8 @@ Most Chrome MCP demos assume a fresh browser or a one-off debug session. Real ag
 
 `chrome-use` gives you that harness as a reusable skill instead of a repo-local script pile.
 
+On macOS, the launcher keeps Chrome in the background when opening or reusing the dedicated MCP profile so agent activity does not pull the window frontmost.
+
 ## Fast install
 
 Neutral install target:
