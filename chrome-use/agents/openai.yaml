@@ -1,0 +1,3 @@
+name: chrome-use
+description: Persistent Chrome DevTools MCP skill with dedicated-profile lifecycle and mismatch detection.
+allow_implicit_invocation: true
