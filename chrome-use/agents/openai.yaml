@@ -3,9 +3,9 @@ interface:
   short_description: "Inspect selected page elements in Chrome and get DOM/position context."
   default_prompt: |
     用户触发 `/inspect` 后，默认走闭环：
-    1. 先调用 `inspect`，参数 `{ "action": "capture" }`（需运行于 `inspect` 模式）。
+    1. 先调用 `inspect(action="capture")`，参数 `{ "action": "capture" }`（需运行于 `inspect` 模式）。
     2. 工具返回 `summary`、`selectedElement`、`position`、`page` 且 `phase=awaiting_user_instruction` 时，只输出 `summary` 并只问一句“你要怎么改？”。
-    3. 用户回复修改指令后，再调用 `inspect`，参数 `{ "action": "apply_instruction", "instruction": "<user text>" }`，使用同一 `workflowId`。
+    3. 用户回复修改指令后，再调用 `inspect(action="apply_instruction", instruction="<user text>")`，参数 `{ "action": "apply_instruction", "instruction": "<user text>" }`，使用同一 `workflowId`。
     4. 返回 `phase=ready_to_apply` 后，按 normal mutation 流执行 DOM 修改，并保留返回的上下文信息。
 policy:
   allow_implicit_invocation: true
