@@ -21,6 +21,7 @@ Use this skill when an agent needs a repeatable Chrome DevTools MCP workflow wit
 - Treat a mismatched debug endpoint as a blocker.
 - Do not silently fall back to the browser's default profile if the dedicated profile is required.
 - On macOS, launch or reuse Chrome in the background so DevTools MCP work does not steal focus from the user.
+- Expose selection-inspection tooling when element inspection workflows need selected-DOM context.
 
 ## Defaults
 
@@ -44,6 +45,7 @@ These can be overridden with:
 2. If needed, log into the target site in that dedicated browser window.
 3. Run `scripts/doctor.sh` to verify the endpoint belongs to the expected profile.
 4. Use the `chrome-devtools` MCP tools through the wrapper or your client's MCP config.
+5. For selected-element workflows, start wrapper in inspect mode so `/inspect` can be resolved to `inspect(action='capture')`; then call `inspect` or `inspect_selected_element` after Chrome "Inspect" on a node.
 
 ## Scripts
 
@@ -55,8 +57,61 @@ These can be overridden with:
   Opens a URL in the dedicated profile.
 - `scripts/chrome_devtools_mcp_wrapper.sh`
   Launches the official `chrome-devtools-mcp` server against the validated browser endpoint.
+  - Inspect entry:
+    - `bash chrome-use/scripts/chrome_devtools_mcp_wrapper.sh inspect`
+    - `bash chrome-use/scripts/chrome_devtools_mcp_wrapper_inspect.sh`
+- In inspect mode (`CHROME_USE_MCP_MODE=inspect`), the wrapper launches a compatibility bridge that preserves upstream tools and adds:
+  - `inspect_selected_element`
+  - `inspect` (stateful workflow helper)
 - `scripts/cleanup.sh`
   Removes stale helper logs.
+
+## inspect_selected_element
+
+- Returns selected-element context:
+  - `selectedElement`: `backendNodeId`, `nodeName`, `id`, `className`, `ariaLabel`, `descriptionText`, `selectorHint`, `snippet`
+  - `position`: `x`, `y`, `width`, `height`, `quads`
+  - `page`: `title`, `url`, `pageId`, `frameId`
+- Tool parameters:
+  - `waitForSelectionMs` (default 5000, minimum 500)
+  - `timeoutMs` (default 10000)
+
+## Behavior notes
+
+- The tool first listens to `Overlay.inspectNodeRequested` in the active DevTools session.
+- If no event is captured in `waitForSelectionMs`, it falls back to short-interval polling of page active element state within `timeoutMs`.
+- On timeout, it returns an error with explicit `"timeout"` context and the last observed bridge error if available.
+
+## inspect
+
+- A stateful interaction wrapper around selected-element inspection.
+- `/inspect` is handled by this skill by default with implicit invocation enabled. If the request appears to do selected-element work, call `inspect(action='capture')` first.
+- Phases:
+  - `capture`: waits for selection and returns `selectedElement/position/page` plus `summary`, `workflowId`，`phase=awaiting_user_instruction`。
+  - `apply_instruction`: accepts the user's modification instruction for the same workflow and returns `ready_to_apply` payload.
+- Codex one-shot flow:
+- `/inspect` -> `inspect(action='capture')`
+  - show `summary` and ask for one concrete DOM modification instruction
+  - `inspect(action='apply_instruction', instruction='...')`
+  - proceed with the returned `ready_to_apply` context in your mutation tools.
+- Recommended flow in Codex:
+  - Call `inspect(action='capture')`.
+  - If `phase=awaiting_user_instruction`, show summary to user and ask for exact DOM modification instruction.
+  - Call `inspect(action='apply_instruction', instruction='...')` with same session intent.
+  - Use normal Codex mutation tools to apply the instruction in your editing flow.
+- Input schema:
+  - `action` (`capture` | `apply_instruction`, default `capture`)
+  - `waitForSelectionMs` (default 5000, min 500)
+  - `timeoutMs` (default 10000)
+  - `instruction` (required when `action=apply_instruction`)
+- Returns:
+  - `phase`
+  - `workflowId`
+  - `selectedElement`
+  - `position`
+  - `page`
+  - `summary`
+  - `userInstruction` when applied
 
 ## Client notes
 
