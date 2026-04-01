@@ -15,8 +15,11 @@ bash scripts/verify-manifest.sh
 - `/chrome` and `/inspect` are not registered as standalone command selectors
 - startup URL resolution follows:
   - explicit user URL
+  - project docs webapp entry from `CHROME_INSPECT_PROJECT_ROOT`
   - `CHROME_USE_DEFAULT_WEBAPP_URL`
   - `about:blank`
+- `chrome-inspect` wrapper scripts resolve into the shared `chrome-use/scripts/` helpers
+- `open_url.sh` returns the debug URL on stdout after ensuring the local project web app is running when auto-start is enabled
 
 3. Confirm packaging docs list only:
 

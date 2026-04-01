@@ -2,9 +2,22 @@
 set -euo pipefail
 
 explicit_url="${1:-}"
+project_root="${CHROME_INSPECT_PROJECT_ROOT:-}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+PROJECT_ENTRY=""
 
 if [[ -n "$explicit_url" ]]; then
   echo "$explicit_url"
+  exit 0
+fi
+
+if [[ -z "$explicit_url" && -n "$project_root" && -d "$project_root" ]]; then
+  PROJECT_ENTRY="$("$SCRIPT_DIR/project_webapp_entry.sh" "$project_root" 2>/dev/null || true)"
+fi
+
+if [[ -n "$PROJECT_ENTRY" ]]; then
+  echo "$PROJECT_ENTRY"
   exit 0
 fi
 

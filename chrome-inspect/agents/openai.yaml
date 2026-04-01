@@ -3,15 +3,23 @@ interface:
   short_description: "Capture a selected element context, summarize it, and return ready-to-apply mutation context."
   default_prompt: |
     When `/chrome-inspect` is triggered:
-    1. Call `bash scripts/open_url.sh "<url>"` to prepare the dedicated profile/session.
-       `scripts/open_url.sh` resolves the startup URL in this order:
-       - explicit user URL
+    1. Resolve startup URL in this order:
+       - explicit user URL (if provided)
+       - detected docs webapp entry URL from `CHROME_INSPECT_PROJECT_ROOT`
        - `CHROME_USE_DEFAULT_WEBAPP_URL`
        - `about:blank`
-    2. Ensure the MCP session is running in inspect mode (`CHROME_USE_MCP_MODE=inspect`).
+    2. Open Chrome in the resolved URL with:
+       `bash scripts/open_url.sh "<resolved_url>"`
+       so the dedicated profile/debug endpoint is ready and local docs webapp is auto-started when
+       `CHROME_INSPECT_PROJECT_ROOT` points to a local project (for example
+       `/Users/longbiao/Projects/home-page`).
+    3. Ensure the MCP session is running in inspect mode (`CHROME_USE_MCP_MODE=inspect`).
        You can use `scripts/../chrome-use/scripts/chrome_devtools_mcp_wrapper_inspect.sh` by default.
-    3. Call `inspect(action="capture")` first.
-    4. If the return is `phase=awaiting_user_instruction`, output only the `summary` and ask one operator question: `How should I edit it?`.
-    5. After the user provides instruction text, call `inspect(action="apply_instruction", instruction="<user instruction>")` with the same `workflowId`.
-    6. Return the `ready_to_apply` payload and keep `selectedElement`, `position`, and `page` as mutation context.
+    4. Immediately call `inspect(action="capture", timeoutMs=0)` and wait for the MCP result.
+       Do not return a final response, partial completion summary, or timeout-style "Worked for ..."
+       message before the tool returns an element selection result.
+    5. If the return is `phase=awaiting_user_instruction`, output the selected-element
+       `summary` and ask exactly one operator question: `How should I edit it?`.
+    6. After the user provides instruction text, call `inspect(action="apply_instruction", instruction="<user instruction>")` with the same `workflowId`.
+    7. Return the `ready_to_apply` payload and keep `selectedElement`, `position`, and `page` as mutation context.
   allow_implicit_invocation: false

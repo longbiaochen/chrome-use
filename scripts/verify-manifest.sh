@@ -60,12 +60,16 @@ contains_no_direct_chrome_prompt() {
 }
 
 check_startup_url_resolution() {
+  local project_root="$TMP_ROOT/project-root"
   local expected_default="about:blank"
   local expected_env="https://fallback.example"
   local expected_explicit="https://example.com/login"
+  local expected_project_entry="http://127.0.0.1:4321/"
   local resolved_default
   local resolved_env
   local resolved_explicit
+  local resolved_project
+  local resolved_project_with_env
 
   resolved_default="$($REPO_ROOT/chrome-use/scripts/resolve_startup_url.sh)"
   assert_eq "$expected_default" "$resolved_default" "Startup URL default fallback"
@@ -75,6 +79,53 @@ check_startup_url_resolution() {
 
   resolved_explicit="$(CHROME_USE_DEFAULT_WEBAPP_URL="$expected_env" "$REPO_ROOT/chrome-use/scripts/resolve_startup_url.sh" "$expected_explicit")"
   assert_eq "$expected_explicit" "$resolved_explicit" "Startup URL explicit URL takes precedence"
+
+  mkdir -p "$project_root"
+  cat >"$project_root/Makefile" <<'EOF'
+PORT ?= 4321
+
+serve:
+	python -m http.server $(PORT)
+EOF
+
+  expected_project_entry="$("$REPO_ROOT/chrome-use/scripts/project_webapp_entry.sh" "$project_root")"
+  resolved_project="$(CHROME_INSPECT_PROJECT_ROOT="$project_root" "$REPO_ROOT/chrome-use/scripts/resolve_startup_url.sh")"
+  if [[ -n "$expected_project_entry" ]]; then
+    assert_eq "$expected_project_entry" "$resolved_project" "Startup URL resolves docs webapp entry before env"
+  else
+    log_fail "Could not detect docs webapp entry for $project_root"
+  fi
+
+  resolved_project_with_env="$(CHROME_INSPECT_PROJECT_ROOT="$project_root" CHROME_USE_DEFAULT_WEBAPP_URL="$expected_env" "$REPO_ROOT/chrome-use/scripts/resolve_startup_url.sh")"
+  if [[ -n "$expected_project_entry" ]]; then
+    assert_eq "$expected_project_entry" "$resolved_project_with_env" "Project root entry overrides env fallback"
+  fi
+}
+
+check_wrapper_targets() {
+  if rg -Fq 'exec "$SCRIPT_DIR/../../chrome-use/scripts/open_url.sh" "$@"' "$REPO_ROOT/chrome-inspect/scripts/open_url.sh"; then
+    log_ok "chrome-inspect open_url wrapper target"
+  else
+    log_fail "chrome-inspect open_url wrapper target is incorrect"
+  fi
+
+  if rg -Fq 'exec "$SCRIPT_DIR/../../chrome-use/scripts/chrome_devtools_mcp_wrapper_inspect.sh" "$@"' "$REPO_ROOT/chrome-inspect/scripts/chrome_devtools_mcp_wrapper.sh"; then
+    log_ok "chrome-inspect MCP wrapper target"
+  else
+    log_fail "chrome-inspect MCP wrapper target is incorrect"
+  fi
+
+  if rg -Fq 'exec "$SCRIPT_DIR/../../chrome-use/scripts/open_url.sh" "$@"' "$REPO_ROOT/chrome-auth/scripts/open_url.sh"; then
+    log_ok "chrome-auth open_url wrapper target"
+  else
+    log_fail "chrome-auth open_url wrapper target is incorrect"
+  fi
+
+  if rg -Fq 'exec "$SCRIPT_DIR/../../chrome-use/scripts/chrome_devtools_mcp_wrapper.sh" "$@"' "$REPO_ROOT/chrome-auth/scripts/chrome_devtools_mcp_wrapper.sh"; then
+    log_ok "chrome-auth MCP wrapper target"
+  else
+    log_fail "chrome-auth MCP wrapper target is incorrect"
+  fi
 }
 
 check_install_layout() {
@@ -152,6 +203,7 @@ main() {
   check_install_layout "install/install-codex-skill.sh" CODEX_SKILLS_ROOT
   check_skill_metadata
   check_startup_url_resolution
+  check_wrapper_targets
 
   if (( failures > 0 )); then
     log_fail "Manifest verification failed with $failures issue(s)."

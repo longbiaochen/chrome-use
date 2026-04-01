@@ -186,7 +186,7 @@ function inspectToolDef() {
         timeoutMs: {
           type: "number",
           minimum: 0,
-          default: DEFAULT_TIMEOUT_MS,
+          default: DEFAULT_WAIT_MS,
           description:
             "Maximum total wait time for returning a selected element (in ms).",
         },
@@ -221,9 +221,9 @@ function inspectFlowToolDef() {
         timeoutMs: {
           type: "number",
           minimum: 0,
-          default: DEFAULT_TIMEOUT_MS,
+          default: 0,
           description:
-            "Maximum total wait time for returning a selected element (in ms).",
+            "Maximum total wait time for returning a selected element (in ms). Use 0 to wait until user selects an element.",
         },
         instruction: {
           type: "string",
@@ -540,6 +540,65 @@ async function resolveSelectionByActiveElement(cdp, state, sessionState, pageInf
   );
 }
 
+async function materializeSelectionPayload(cdp, state, selection) {
+  if (!selection || !selection.targetId) {
+    throw new Error(
+      "尚未选中元素（未收到 Selection 事件）。请在 Chrome 中先点击 Inspect 并选中一个节点后重试。",
+    );
+  }
+
+  const sessionState = state.targetsById.get(selection.targetId);
+  if (!sessionState || (!sessionState.sessionId && !sessionState.cdp)) {
+    throw new Error("未匹配到当前选中元素所在页面，建议重新选中元素后重试。");
+  }
+
+  const basePageInfo = state.targetInfosByTargetId.get(selection.targetId) || {};
+  const pageInfo = {
+    ...basePageInfo,
+    frameId: sessionState.frameId || basePageInfo.frameId || null,
+  };
+  return resolveSelectedElementPayload(
+    cdp,
+    state,
+    sessionState,
+    pageInfo,
+    selection,
+  );
+}
+
+async function resolveSelectionOnDemandBlocking(cdp, state, { waitForSelectionMs }) {
+  const startedAt = Date.now();
+  const waitMs = Math.max(DEFAULT_MIN_WAIT_MS, waitForSelectionMs);
+
+  while (true) {
+    if (!state.targetsById.size || cdp.isClosed?.()) {
+      throw new Error(
+        "未发现可用的检查会话，请先在 Chrome 打开页面并切换到 inspect 模式后重试。",
+      );
+    }
+
+    const selection = await waitForSelection(state, waitMs, startedAt);
+    if (selection) {
+      return materializeSelectionPayload(cdp, state, selection);
+    }
+
+    for (const [targetId, sessionState] of state.targetsById) {
+      const pageInfo = state.targetInfosByTargetId.get(targetId) || {};
+      const fromActive = await resolveSelectionByActiveElement(
+        cdp,
+        state,
+        sessionState,
+        pageInfo,
+      );
+      if (fromActive) {
+        return fromActive;
+      }
+    }
+
+    await sleep(250);
+  }
+}
+
 async function resolveSelectionOnDemand(cdp, state, { waitForSelectionMs, timeoutMs }) {
   const start = Date.now();
   const deadline = start + timeoutMs;
@@ -585,17 +644,7 @@ async function resolveSelectionOnDemand(cdp, state, { waitForSelectionMs, timeou
     }
   }
 
-  const sessionState = state.targetsById.get(selection.targetId);
-  if (!sessionState || (!sessionState.sessionId && !sessionState.cdp)) {
-    throw new Error("未匹配到当前选中元素所在页面，建议重新选中元素后重试。");
-  }
-  const basePageInfo = state.targetInfosByTargetId.get(selection.targetId) || {};
-  const pageInfo = {
-    ...basePageInfo,
-    frameId: sessionState.frameId || basePageInfo.frameId || null,
-  };
-  selection.targetId = selection.targetId || pageInfo.targetId;
-  return resolveSelectedElementPayload(cdp, state, sessionState, pageInfo);
+  return materializeSelectionPayload(cdp, state, selection);
 }
 
 async function runInspectFlow(cdp, state, args, messageId) {
@@ -604,10 +653,15 @@ async function runInspectFlow(cdp, state, args, messageId) {
   const timeoutMs = clampInt(args.timeoutMs, 0, 60000, DEFAULT_TIMEOUT_MS);
 
   if (action === "capture") {
-    const payload = await resolveSelectionOnDemand(cdp, state, {
-      waitForSelectionMs,
-      timeoutMs,
-    });
+    const payload =
+      timeoutMs > 0
+        ? await resolveSelectionOnDemand(cdp, state, {
+            waitForSelectionMs,
+            timeoutMs,
+          })
+        : await resolveSelectionOnDemandBlocking(cdp, state, {
+            waitForSelectionMs,
+          });
 
     const workflow = {
       workflowId: `${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
@@ -634,6 +688,11 @@ async function runInspectFlow(cdp, state, args, messageId) {
 
   if (!state.inspectWorkflow || state.inspectWorkflow.status !== "awaiting_instruction") {
     throw new Error("当前没有可用的 inspect 会话。请先执行 inspect(action='capture') 获取一次选中结果。");
+  }
+
+  if (!state.targetsById.size || cdp.isClosed?.()) {
+    state.inspectWorkflow = null;
+    throw new Error("会话已失效或浏览器连接断开，请重新执行 inspect(action='capture')。");
   }
 
   if (typeof args.instruction !== "string" || !args.instruction.trim()) {

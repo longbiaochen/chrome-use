@@ -2,4 +2,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec "$SCRIPT_DIR/../chrome-use/scripts/open_url.sh" "$@"
+unset CHROME_INSPECT_AUTO_START_WEBAPP
+unset CHROME_INSPECT_PROJECT_ROOT
+exec "$SCRIPT_DIR/../../chrome-use/scripts/open_url.sh" "$@"
