@@ -2,12 +2,12 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SOURCE_DIR="$REPO_ROOT/chrome-use"
 TARGET_ROOT="${CODEX_SKILLS_ROOT:-$HOME/.codex/skills}"
-TARGET_DIR="$TARGET_ROOT/chrome-use"
 
 mkdir -p "$TARGET_ROOT"
-rm -rf "$TARGET_DIR"
-ln -s "$SOURCE_DIR" "$TARGET_DIR"
+rm -rf "$TARGET_ROOT/chrome-inspect" "$TARGET_ROOT/chrome-auth" "$TARGET_ROOT/chrome-use"
 
-echo "Installed chrome-use to $TARGET_DIR"
+for name in chrome-inspect chrome-auth; do
+  ln -s "$REPO_ROOT/$name" "$TARGET_ROOT/$name"
+  echo "Installed $name to $TARGET_ROOT/$name"
+done

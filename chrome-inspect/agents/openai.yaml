@@ -1,0 +1,17 @@
+interface:
+  display_name: "Chrome Inspect"
+  short_description: "Capture a selected element context, summarize it, and return ready-to-apply mutation context."
+  default_prompt: |
+    When `/chrome-inspect` is triggered:
+    1. Call `bash scripts/open_url.sh "<url>"` to prepare the dedicated profile/session.
+       `scripts/open_url.sh` resolves the startup URL in this order:
+       - explicit user URL
+       - `CHROME_USE_DEFAULT_WEBAPP_URL`
+       - `about:blank`
+    2. Ensure the MCP session is running in inspect mode (`CHROME_USE_MCP_MODE=inspect`).
+       You can use `scripts/../chrome-use/scripts/chrome_devtools_mcp_wrapper_inspect.sh` by default.
+    3. Call `inspect(action="capture")` first.
+    4. If the return is `phase=awaiting_user_instruction`, output only the `summary` and ask one operator question: `How should I edit it?`.
+    5. After the user provides instruction text, call `inspect(action="apply_instruction", instruction="<user instruction>")` with the same `workflowId`.
+    6. Return the `ready_to_apply` payload and keep `selectedElement`, `position`, and `page` as mutation context.
+  allow_implicit_invocation: false

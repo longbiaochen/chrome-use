@@ -1,19 +1,17 @@
 # chrome-use
 
-`chrome-use` is an agent skill for persistent Chrome DevTools MCP sessions with a dedicated browser profile, readiness checks, and mismatch detection.
+`chrome-inspect` and `chrome-auth` are explicit Codex-facing skills for Chrome DevTools MCP workflows.
+`chrome-use` is retained as the shared helper package used by both skills.
 
-It is packaged as a cross-agent `SKILL.md` skill first, with Codex as the reference client and best-tested adapter.
+Only two slash commands are surfaced by design:
 
-## Why this exists
+- `/chrome-inspect`
+- `/chrome-auth`
 
-Most Chrome MCP demos assume a fresh browser or a one-off debug session. Real agent work usually needs:
+`/chrome` and `/inspect` are intentionally unavailable as standalone commands.
 
-- a persistent authenticated Chrome profile
-- a fixed debug endpoint
-- a way to prove the MCP server is attached to the correct profile
-- a blocker when the endpoint points at the wrong browser
-
-`chrome-use` gives you that harness as a reusable skill instead of a repo-local script pile.
+- `/chrome-inspect` captures selected DOM context in a dedicated profile and returns a mutation-ready inspect workflow.
+- `/chrome-auth` handles operator-driven login/authorization flows while keeping session state on the dedicated profile.
 
 On macOS, the launcher keeps Chrome in the background when opening or reusing the dedicated MCP profile so agent activity does not pull the window frontmost.
 
@@ -35,24 +33,81 @@ cd chrome-use
 bash install/install-codex-skill.sh
 ```
 
-After install, the canonical skill folder is `chrome-use/` and the canonical entrypoint is [`chrome-use/SKILL.md`](./chrome-use/SKILL.md).
+After install, exposed skills are:
+
+- `~/.agents/skills/chrome-inspect`
+- `~/.agents/skills/chrome-auth`
+- `~/.codex/skills/chrome-inspect`
+- `~/.codex/skills/chrome-auth`
+
+`chrome-use` is not exposed as a standalone entrypoint by default.
+
+## Inspect-selected-element mode
+
+To enable inspect-compatible MCP tools, set the inspect mode when launching MCP:
+
+```bash
+export CHROME_USE_MCP_MODE=inspect
+bash chrome-use/scripts/chrome_devtools_mcp_wrapper.sh
+```
+
+or use the inspect wrapper directly:
+
+```bash
+bash chrome-use/scripts/chrome_devtools_mcp_wrapper_inspect.sh
+```
+
+Available inspect tools:
+
+- `inspect_selected_element`
+  - Returns selected element description, geometry, and page context.
+  - Parameters:
+    - `waitForSelectionMs` (default `5000`, minimum `500`)
+    - `timeoutMs` (default `10000`)
+  - Fallback strategy:
+    - prioritize `Overlay.inspectNodeRequested`
+    - fallback to short polling of active element state
+  - Returns:
+    - `selectedElement`
+    - `position`
+    - `page` with `title`, `url`, `pageId`, `frameId`
+- `inspect`
+  - Parameters:
+    - `action` (`capture` | `apply_instruction`, default `capture`)
+    - `instruction` (required when `apply_instruction`)
+    - `waitForSelectionMs` (default `5000`, minimum `500`)
+    - `timeoutMs` (default `10000`)
+  - Output fields:
+    - `phase` (`awaiting_user_instruction`, `ready_to_apply`)
+    - `workflowId`
+    - `selectedElement`
+    - `position`
+    - `page`
+    - `summary`
+    - `userInstruction`
 
 ## Client support
 
 | Client | Install path | Status | Notes |
 | --- | --- | --- | --- |
 | Codex | `~/.agents/skills/` or `~/.codex/skills/` | Best supported | Optional `agents/openai.yaml` metadata included |
-| Claude-compatible clients | `~/.agents/skills/` | Compatible | `.claude/skills/` may work for some clients, but is not the canonical path |
-| Generic skills-compatible agents | `.agents/skills/` | Compatible | Uses plain `SKILL.md` plus shell scripts |
+| Claude-compatible clients | `~/.agents/skills/` | Compatible | Client-specific wrappers may use folder-level linking |
+| Generic skills-compatible agents | `.agents/skills/` | Compatible | Uses plain `SKILL.md` plus shared scripts |
 
 ## What gets installed
 
-- [`chrome-use/SKILL.md`](./chrome-use/SKILL.md)
-- [`chrome-use/scripts/ensure_profile.sh`](./chrome-use/scripts/ensure_profile.sh)
-- [`chrome-use/scripts/doctor.sh`](./chrome-use/scripts/doctor.sh)
-- [`chrome-use/scripts/open_url.sh`](./chrome-use/scripts/open_url.sh)
-- [`chrome-use/scripts/chrome_devtools_mcp_wrapper.sh`](./chrome-use/scripts/chrome_devtools_mcp_wrapper.sh)
-- [`chrome-use/scripts/cleanup.sh`](./chrome-use/scripts/cleanup.sh)
+- `chrome-inspect/SKILL.md`
+- `chrome-inspect/agents/openai.yaml`
+- `chrome-auth/SKILL.md`
+- `chrome-auth/agents/openai.yaml`
+- `chrome-use/SKILL.md` (shared package metadata)
+- `chrome-use/agents/openai.yaml` (shared package metadata)
+- `chrome-use/scripts/ensure_profile.sh`
+- `chrome-use/scripts/doctor.sh`
+- `chrome-use/scripts/open_url.sh`
+- `chrome-use/scripts/chrome_devtools_mcp_wrapper.sh`
+- `chrome-use/scripts/chrome_devtools_mcp_wrapper_inspect.sh`
+- `chrome-use/scripts/cleanup.sh`
 
 ## Defaults
 
@@ -69,14 +124,32 @@ export CHROME_USE_PROFILE_DIR="$HOME/.codex/chrome-mcp-profile"
 export CHROME_USE_DEBUG_PORT="9223"
 ```
 
-## Codex example
+`CHROME_USE_DEFAULT_WEBAPP_URL` is used as optional URL fallback before `about:blank`.
 
-Codex-specific metadata is optional and lives in [`chrome-use/agents/openai.yaml`](./chrome-use/agents/openai.yaml).
-
-For a Codex setup that already standardizes on `~/.codex/chrome-mcp-profile`, either:
+For a Codex setup that already standardizes on `~/.codex/chrome-mcp-profile`:
 
 - set `CHROME_USE_PROFILE_DIR="$HOME/.codex/chrome-mcp-profile"`, or
-- update the wrapper command in your `~/.codex/config.toml` to export that env var before launching the wrapper
+- update the wrapper command in `~/.codex/config.toml` to export that env var before launching the wrapper
+
+## Codex setup notes
+
+Install examples in this repo install both explicit skills above and do not expose `/chrome`.
+
+For `/chrome-inspect` default flow, send:
+
+1. Run `/chrome-inspect` in chat.
+2. Click target element in Chrome inspector flow.
+3. Confirm returned `summary`.
+4. Reply with a concrete edit instruction.
+5. Confirm returned `phase=ready_to_apply`.
+
+For `/chrome-auth`, send the command with target URL when known, then follow interactive auth steps in the same dedicated profile session.
+
+To verify packaging, command availability, and fallback behavior from this repository, run:
+
+```bash
+bash scripts/verify-manifest.sh
+```
 
 ## Platform support
 
@@ -89,16 +162,3 @@ For a Codex setup that already standardizes on `~/.codex/chrome-mcp-profile`, ei
 - [Codex install and adapter notes](./docs/clients/codex.md)
 - [Generic `.agents/skills` install](./docs/clients/generic.md)
 - [Claude-compatible install notes](./docs/clients/claude.md)
-
-## Positioning
-
-Market this as an agent skill or Chrome DevTools MCP skill, not a plugin.
-
-The portable value is the skill contract:
-
-- persistent dedicated profile
-- fixed debug endpoint
-- profile ownership check
-- clear blocker on mismatch
-
-That is the hook worth sharing in demos, screenshots, and social posts.

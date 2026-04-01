@@ -1,0 +1,24 @@
+# chrome-use Repo Instructions
+
+- This repository is the standalone public home for the `chrome-use` agent skill.
+- Keep the public packaging cross-agent and cross-platform by default.
+- Treat Codex as the reference client and best-tested adapter, not the only supported client.
+- Keep the canonical public skill payload in [`chrome-use/SKILL.md`](./chrome-use/SKILL.md).
+- Keep Codex-specific metadata optional and isolated under [`chrome-use/agents/openai.yaml`](./chrome-use/agents/openai.yaml).
+- For OpenAI, Codex, Apps SDK, or API questions, use the OpenAI developer documentation MCP server first.
+- Prefer client-neutral paths in public docs for installable commands:
+  - `~/.agents/skills/chrome-auth`
+  - `~/.agents/skills/chrome-inspect`
+  - `~/.codex/skills/chrome-auth`
+  - `~/.codex/skills/chrome-inspect`
+- `chrome-use` is a shared, non-command helper package.
+- Public defaults for this repo should remain neutral:
+  - profile dir: `~/.chrome-use/agent-profile`
+  - state dir: `~/.chrome-use/state`
+  - debug endpoint: `http://127.0.0.1:9223`
+- On macOS, open or reuse the dedicated Chrome profile in the background so MCP startup does not steal user focus.
+- Do not claim Windows support unless it has been tested end-to-end.
+- When updating launch messaging, optimize for shareability:
+  - lead with the pain point
+  - list the 2-3 concrete fixes
+  - keep the GitHub link in the post

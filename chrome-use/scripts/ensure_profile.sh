@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROFILE_DIR="${CHROME_USE_PROFILE_DIR:-$HOME/.chrome-use/agent-profile}"
 STATE_DIR="${CHROME_USE_STATE_DIR:-$HOME/.chrome-use/state}"
 DEBUG_PORT="${CHROME_USE_DEBUG_PORT:-9223}"
 DEBUG_HOST="${CHROME_USE_DEBUG_HOST:-127.0.0.1}"
 DEBUG_URL="http://${DEBUG_HOST}:${DEBUG_PORT}"
-START_URL="${1:-about:blank}"
+START_URL="${1:-}"
+START_URL="$("$SCRIPT_DIR/resolve_startup_url.sh" "$START_URL")"
 LOG_FILE="${STATE_DIR}/chrome.log"
 
 platform() {
@@ -84,6 +86,7 @@ open_existing_profile_url() {
 
   case "$os" in
     macos)
+      [[ -n "$START_URL" ]] || return 0
       if [[ -n "${CHROME_USE_CHROME_APP:-}" ]]; then
         open -g -a "$CHROME_USE_CHROME_APP" "$START_URL" >/dev/null 2>&1 || true
       else
@@ -105,29 +108,32 @@ launch_chrome() {
 
   case "$os" in
     macos)
+      local args=(
+        --user-data-dir="$PROFILE_DIR"
+        --remote-debugging-port="$DEBUG_PORT"
+        --no-first-run
+        --no-default-browser-check
+      )
+    if [[ -n "$START_URL" ]]; then
+      args+=("$START_URL")
+    fi
       if [[ -n "${CHROME_USE_CHROME_APP:-}" ]]; then
-        open -g -na "$CHROME_USE_CHROME_APP" --args \
-          --user-data-dir="$PROFILE_DIR" \
-          --remote-debugging-port="$DEBUG_PORT" \
-          --no-first-run \
-          --no-default-browser-check \
-          "$START_URL" >>"$LOG_FILE" 2>&1
+        open -g -na "$CHROME_USE_CHROME_APP" --args "${args[@]}" >>"$LOG_FILE" 2>&1
       else
-        open -g -na "Google Chrome" --args \
-          --user-data-dir="$PROFILE_DIR" \
-          --remote-debugging-port="$DEBUG_PORT" \
-          --no-first-run \
-          --no-default-browser-check \
-          "$START_URL" >>"$LOG_FILE" 2>&1
+        open -g -na "Google Chrome" --args "${args[@]}" >>"$LOG_FILE" 2>&1
       fi
       ;;
     linux)
-      "$chrome_bin" \
-        --user-data-dir="$PROFILE_DIR" \
-        --remote-debugging-port="$DEBUG_PORT" \
-        --no-first-run \
-        --no-default-browser-check \
-        "$START_URL" >>"$LOG_FILE" 2>&1 &
+      local args=(
+        --user-data-dir="$PROFILE_DIR"
+        --remote-debugging-port="$DEBUG_PORT"
+        --no-first-run
+        --no-default-browser-check
+      )
+      if [[ -n "$START_URL" ]]; then
+        args+=("$START_URL")
+      fi
+      "$chrome_bin" "${args[@]}" >>"$LOG_FILE" 2>&1 &
       ;;
     windows)
       echo "Windows is not yet tested for chrome-use. Set CHROME_USE_CHROME_BIN and adapt the launcher before claiming support." >&2
