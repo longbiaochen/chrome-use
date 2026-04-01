@@ -1,28 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROFILE_DIR="${CHROME_USE_PROFILE_DIR:-$HOME/.chrome-use/agent-profile}"
-DEBUG_PORT="${CHROME_USE_DEBUG_PORT:-9223}"
-DEBUG_HOST="${CHROME_USE_DEBUG_HOST:-127.0.0.1}"
-DEBUG_URL="http://${DEBUG_HOST}:${DEBUG_PORT}"
-
-is_endpoint_ready() {
-  curl -fsS "${DEBUG_URL}/json/version" >/dev/null 2>&1
-}
-
-list_matching_pids() {
-  ps ax -o pid= -o command= \
-    | awk -v profile="$PROFILE_DIR" -v port="--remote-debugging-port=${DEBUG_PORT}" '
-        index($0, profile) && index($0, port) { print $1 }
-      '
-}
-
-list_profile_pids() {
-  ps ax -o pid= -o command= \
-    | awk -v profile="$PROFILE_DIR" '
-        index($0, profile) { print $1 }
-      '
-}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/runtime_lib.sh"
 
 echo "Profile: $PROFILE_DIR"
 echo "Debug URL: $DEBUG_URL"
@@ -35,21 +15,48 @@ fi
 
 matching_pids="$(list_matching_pids || true)"
 profile_pids="$(list_profile_pids || true)"
+matching_count="$(count_lines "$matching_pids")"
+profile_count="$(count_lines "$profile_pids")"
 
-if [[ -n "$matching_pids" ]]; then
-  echo "Matching PID(s): $matching_pids"
+echo "Dedicated PID count: $profile_count"
+echo "Matching PID count: $matching_count"
+echo "Matching PID(s): ${matching_pids:-none}"
+echo "Profile PID(s): ${profile_pids:-none}"
+
+if [[ "$matching_count" -gt 1 ]]; then
+  echo "Window count: unknown"
+  echo "Status: blocker; multiple dedicated-profile Chrome processes are exposing the canonical debug port"
+  exit 1
+fi
+
+if [[ "$matching_count" -eq 1 ]]; then
+  pid="$(awk 'NF { print; exit }' <<<"$matching_pids")"
+  if [[ "$(platform)" == "macos" ]]; then
+    if ! window_count="$(window_count_for_pid "$pid" 2>/dev/null)"; then
+      echo "Window count: unavailable"
+      echo "Status: blocker; unable to inspect dedicated-profile Chrome windows"
+      exit 1
+    fi
+
+    echo "Window count: $window_count"
+    if [[ "$window_count" != "1" ]]; then
+      echo "Status: blocker; dedicated-profile Chrome must have exactly one window"
+      exit 1
+    fi
+  else
+    echo "Window count: unsupported"
+  fi
+
   echo "Status: dedicated profile is ready for Chrome DevTools MCP"
   exit 0
 fi
 
 if is_endpoint_ready; then
-  echo "Matching PID(s): none"
-  echo "Profile PID(s): ${profile_pids:-none}"
+  echo "Window count: unknown"
   echo "Status: blocker; debug endpoint is not owned by the expected profile"
   exit 1
 fi
 
-echo "Matching PID(s): none"
-echo "Profile PID(s): ${profile_pids:-none}"
+echo "Window count: unknown"
 echo "Status: blocker; dedicated profile is not exposing the debug endpoint"
 exit 1

@@ -8,8 +8,8 @@ interface:
        - explicit auth/login/authorization URL
        - `CHROME_USE_DEFAULT_WEBAPP_URL`
        - `about:blank`
-    2. Run MCP in standard mode (`scripts/../chrome-use/scripts/chrome_devtools_mcp_wrapper.sh`) so the dedicated session remains the same.
+    2. Run MCP in standard mode (`scripts/../chrome-use/scripts/chrome_devtools_mcp_wrapper.sh`) so the dedicated session remains the same single-window `agent-profile` instance.
     3. Guide the user through operator-driven auth actions (navigate, type, click, screenshot, and state checks).
     4. Do not auto-fill credentials directly.
-    5. Preserve the same Chrome process and profile state for follow-up auth calls.
+    5. Preserve the same Chrome process, single dedicated Chrome window, and profile state for follow-up auth calls.
   allow_implicit_invocation: false

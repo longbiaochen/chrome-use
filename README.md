@@ -14,7 +14,7 @@ Only two slash commands are surfaced by design:
 - `/chrome-auth` handles operator-driven login/authorization flows while keeping session state on the dedicated profile.
 - For `/chrome-inspect`, the launcher can auto-start a detected local project web app before opening Chrome when `CHROME_INSPECT_PROJECT_ROOT` is set.
 
-On macOS, the launcher keeps Chrome in the background when opening or reusing the dedicated MCP profile so agent activity does not pull the window frontmost.
+On macOS, the launcher keeps Chrome in the background when opening or reusing the dedicated MCP profile so agent activity does not pull the window frontmost. The dedicated `agent-profile` must remain a single-window Chrome instance; other Chrome windows under other profiles are allowed.
 
 ## Fast install
 
@@ -120,6 +120,13 @@ The public repo is client-neutral by default:
 - state dir: `~/.chrome-use/state`
 - debug URL: `http://127.0.0.1:9223`
 
+Runtime contract:
+
+- exactly one Chrome process owns `~/.chrome-use/agent-profile`
+- that process exposes `127.0.0.1:9223`
+- the dedicated profile has exactly one Chrome window on macOS
+- follow-up launches reuse that same instance by opening a new tab there
+
 Override with environment variables:
 
 ```bash
@@ -144,6 +151,7 @@ For `/chrome-inspect` default flow, send:
 
 1. Run `/chrome-inspect` in chat.
 2. Let the wrapper open Chrome and auto-start the local project web app first when `CHROME_INSPECT_PROJECT_ROOT` is configured.
+   If the dedicated profile is already running, the wrapper reuses it by opening a new tab there instead of creating another dedicated window.
 3. Select the target element in Chrome inspector flow.
 4. Wait for `phase=awaiting_user_instruction`; the agent should not finish the turn before that selection payload is returned.
 5. Confirm returned `summary` and `selectedElement`.
@@ -156,6 +164,12 @@ To verify packaging, command availability, and fallback behavior from this repos
 
 ```bash
 bash scripts/verify-manifest.sh
+```
+
+To verify the dedicated-profile runtime contract with mocked process, endpoint, and window state, run:
+
+```bash
+bash scripts/test-runtime.sh
 ```
 
 ## Platform support

@@ -10,7 +10,7 @@ interface:
        - `about:blank`
     2. Open Chrome in the resolved URL with:
        `bash scripts/open_url.sh "<resolved_url>"`
-       so the dedicated profile/debug endpoint is ready and local docs webapp is auto-started when
+       so the dedicated profile/debug endpoint is ready, the dedicated profile remains a single-window instance, and local docs webapp is auto-started when
        `CHROME_INSPECT_PROJECT_ROOT` points to a local project (for example
        `/Users/longbiao/Projects/home-page`).
     3. Ensure the MCP session is running in inspect mode (`CHROME_USE_MCP_MODE=inspect`).

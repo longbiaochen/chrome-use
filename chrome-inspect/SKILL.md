@@ -16,7 +16,8 @@ Use this skill when an agent needs deterministic, inspect-first Chrome DOM work 
   - `about:blank`
 2. Start local docs web server (for local docs URLs) before opening Chrome when documented. The command wrapper should do this automatically for the detected project webapp entry.
 3. Start or reuse Chrome with the resolved URL through `bash scripts/open_url.sh "<resolved_url>"`.
-4. Ensure the session is attached to the dedicated debug endpoint.
+   Reuse must open a new tab on the running dedicated-profile instance instead of creating a second dedicated window.
+4. Ensure the session is attached to the dedicated debug endpoint and that the dedicated profile still has exactly one Chrome window.
 5. Run in inspect MCP mode and call `inspect(action="capture", timeoutMs=0)` so it blocks until the user selects an element.
 6. Wait for the MCP result. Do not return a final response, a completion summary, or a "Worked for ..." timeout-style message before receiving `phase=awaiting_user_instruction` with the selected-element payload.
 7. If `phase=awaiting_user_instruction`, print concise selected-element summary and ask one concrete DOM instruction.
@@ -25,7 +26,7 @@ Use this skill when an agent needs deterministic, inspect-first Chrome DOM work 
 ## Tools
 
 ### `scripts/open_url.sh`
-Starts or reuses dedicated Chrome with URL startup and prints the active debug URL.
+Starts or reuses dedicated Chrome, enforces the single-window dedicated-profile invariant, and prints the active debug URL.
 
 ### `scripts/../chrome-use/scripts/chrome_devtools_mcp_wrapper_inspect.sh`
 Starts inspect-aware MCP bridge for `inspect_selected_element` and `inspect`.
@@ -33,5 +34,6 @@ Starts inspect-aware MCP bridge for `inspect_selected_element` and `inspect`.
 ## Notes
 
 - Keep the same dedicated profile across sessions with `CHROME_USE_PROFILE_DIR`.
+- Keep the dedicated `agent-profile` isolated to one Chrome window; other Chrome profile windows may exist separately.
 - For explicit mismatches between expected profile/debug endpoint, run `scripts/../chrome-use/scripts/doctor.sh`.
 - `about:blank` is the fallback when no URL is supplied.

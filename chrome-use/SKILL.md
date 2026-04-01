@@ -17,6 +17,7 @@ It is intentionally not a standalone slash command and is not directly invokable
 - Reused authenticated browser state and cookie persistence
 - Deterministic Chrome profile handling
 - Debug endpoint ownership verification
+- Single-window validation for the dedicated profile on macOS
 - Consistent startup URL resolution and MCP launch plumbing
 
 ## Defaults
@@ -38,15 +39,16 @@ These can be overridden with:
 ## Scripted stack
 
 - `scripts/ensure_profile.sh`
-  Starts or reuses the dedicated profile and prints the debug URL.
+  Enforces the dedicated-profile runtime contract, launches Chrome when absent,
+  reuses the running dedicated instance by opening a new tab there, and prints the debug URL.
 - `scripts/doctor.sh`
-  Reports readiness and confirms endpoint ownership.
+  Reports dedicated-profile process count, endpoint ownership, and single-window status.
 - `scripts/open_url.sh [url]`
   Resolves startup URL in this priority:
   - explicit user URL
   - `CHROME_USE_DEFAULT_WEBAPP_URL`
   - `about:blank`
-  then opens it in the dedicated profile.
+  then ensures the URL is opened in the dedicated-profile Chrome instance.
 - `scripts/chrome_devtools_mcp_wrapper.sh`
   Launches MCP against the validated debug endpoint.
 - `scripts/cleanup.sh`
@@ -69,5 +71,7 @@ These can be overridden with:
 ## Platform notes
 
 - macOS is the reference platform.
+- macOS validation requires exactly one Chrome window for the dedicated `agent-profile`;
+  other Chrome windows under other profiles are allowed.
 - Linux is supported by the shell scripts.
 - Windows is not yet tested; if you need Windows support, treat it as planned rather than guaranteed.
