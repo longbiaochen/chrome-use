@@ -72,11 +72,60 @@ is_endpoint_ready() {
   curl -fsS "${DEBUG_URL}/json/version" >/dev/null 2>&1
 }
 
+debug_page_target_count() {
+  local payload
+  payload="$(curl -fsS "${DEBUG_URL}/json/list" 2>/dev/null || true)"
+  if [[ -z "$payload" ]]; then
+    echo 0
+    return
+  fi
+  node -e '
+    const chunks = [];
+    process.stdin.on("data", (chunk) => chunks.push(chunk));
+    process.stdin.on("end", () => {
+      try {
+        const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        const count = Array.isArray(parsed)
+          ? parsed.filter((item) => item && item.type === "page").length
+          : 0;
+        process.stdout.write(String(count));
+      } catch {
+        process.stdout.write("0");
+      }
+    });
+  ' <<<"$payload"
+}
+
+is_browser_root_process() {
+  local command_line="${1:-}"
+  [[ -n "$command_line" ]] || return 1
+  [[ "$command_line" == *"$PROFILE_DIR"* ]] || return 1
+  [[ "$command_line" == *"Google Chrome"* || "$command_line" == *"google-chrome"* || "$command_line" == *"chromium"* ]] || return 1
+  [[ "$command_line" != *" --type="* ]] || return 1
+  [[ "$command_line" != *" Helper"* ]] || return 1
+  return 0
+}
+
 list_matching_pids() {
-  ps ax -o pid= -o command= \
-    | awk -v profile="$PROFILE_DIR" -v port="--remote-debugging-port=${DEBUG_PORT}" '
-        index($0, profile) && index($0, port) { print $1 }
-      '
+  local pid command_line
+  while read -r pid command_line; do
+    [[ -n "${pid:-}" ]] || continue
+    [[ "$command_line" == *"$PROFILE_DIR"* ]] || continue
+    [[ "$command_line" == *"--remote-debugging-port=${DEBUG_PORT}"* ]] || continue
+    if is_browser_root_process "$command_line"; then
+      echo "$pid"
+    fi
+  done < <(ps ax -o pid= -o command=)
+}
+
+list_profile_root_pids() {
+  local pid command_line
+  while read -r pid command_line; do
+    [[ -n "${pid:-}" ]] || continue
+    if is_browser_root_process "$command_line"; then
+      echo "$pid"
+    fi
+  done < <(ps ax -o pid= -o command=)
 }
 
 list_profile_pids() {
@@ -115,6 +164,7 @@ validate_dedicated_window_invariant() {
   local pid="$1"
   local os
   local window_count
+  local page_target_count
 
   os="$(platform)"
   if [[ "$os" != "macos" ]]; then
@@ -124,6 +174,13 @@ validate_dedicated_window_invariant() {
   if ! window_count="$(window_count_for_pid "$pid" 2>/dev/null)"; then
     echo "Unable to inspect Chrome windows for the dedicated profile process ${pid}." >&2
     return 1
+  fi
+
+  if [[ "$window_count" == "0" ]]; then
+    page_target_count="$(debug_page_target_count)"
+    if [[ "$page_target_count" -gt 0 ]]; then
+      return 0
+    fi
   fi
 
   if [[ "$window_count" != "1" ]]; then

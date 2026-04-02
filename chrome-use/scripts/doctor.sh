@@ -15,13 +15,20 @@ fi
 
 matching_pids="$(list_matching_pids || true)"
 profile_pids="$(list_profile_pids || true)"
+profile_root_pids="$(list_profile_root_pids || true)"
 matching_count="$(count_lines "$matching_pids")"
-profile_count="$(count_lines "$profile_pids")"
+profile_count="$(count_lines "$profile_root_pids")"
+page_target_count="0"
+if is_endpoint_ready; then
+  page_target_count="$(debug_page_target_count)"
+fi
 
 echo "Dedicated PID count: $profile_count"
 echo "Matching PID count: $matching_count"
 echo "Matching PID(s): ${matching_pids:-none}"
 echo "Profile PID(s): ${profile_pids:-none}"
+echo "Profile owner PID(s): ${profile_root_pids:-none}"
+echo "Page target count: ${page_target_count}"
 
 if [[ "$matching_count" -gt 1 ]]; then
   echo "Window count: unknown"
@@ -39,6 +46,10 @@ if [[ "$matching_count" -eq 1 ]]; then
     fi
 
     echo "Window count: $window_count"
+    if [[ "$window_count" == "0" && "$page_target_count" -gt 0 ]]; then
+      echo "Status: dedicated profile is ready for Chrome DevTools MCP (page-target fallback)"
+      exit 0
+    fi
     if [[ "$window_count" != "1" ]]; then
       echo "Status: blocker; dedicated-profile Chrome must have exactly one window"
       exit 1

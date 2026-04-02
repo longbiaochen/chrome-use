@@ -2,10 +2,21 @@
 import { spawn } from "node:child_process";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
+import {
+  mkdir,
+  readFile,
+  rename,
+  watch as fsWatch,
+  writeFile,
+} from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
+import { fileURLToPath } from "node:url";
 
 const DEFAULT_WAIT_MS = 5000;
 const DEFAULT_TIMEOUT_MS = 10000;
 const DEFAULT_MIN_WAIT_MS = 500;
+const DEFAULT_POLL_MS = 250;
 const DEFAULT_TRUNCATE = 400;
 const CDP_METHOD_NOT_FOUND_CODE = -32601;
 
@@ -26,7 +37,7 @@ function encodeMessage(obj) {
   return `Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n\r\n${body}`;
 }
 
-function createFrameParser(onMessage) {
+export function createFrameParser(onMessage) {
   let buffer = Buffer.alloc(0);
   return (chunk) => {
     buffer = Buffer.concat([buffer, chunk]);
@@ -36,12 +47,12 @@ function createFrameParser(onMessage) {
         return;
       }
       const header = buffer.slice(0, headerEnd).toString("utf8");
-      const m = header.match(/Content-Length:\s*(\d+)/i);
-      if (!m) {
+      const match = header.match(/Content-Length:\s*(\d+)/i);
+      if (!match) {
         buffer = buffer.slice(headerEnd + 4);
         continue;
       }
-      const length = Number(m[1]);
+      const length = Number(match[1]);
       const bodyStart = headerEnd + 4;
       if (!Number.isFinite(length) || length < 0) {
         buffer = buffer.slice(bodyStart);
@@ -54,24 +65,24 @@ function createFrameParser(onMessage) {
       buffer = buffer.slice(bodyStart + length);
       try {
         onMessage(JSON.parse(body));
-      } catch (_err) {
-        // skip malformed payloads
+      } catch {
+        // Skip malformed payloads.
       }
     }
   };
 }
 
-function parseNumber(v, fallback) {
-  const parsed = Number(v);
+function parseNumber(value, fallback) {
+  const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function clampInt(v, min, max, fallback) {
-  const n = parseNumber(v, fallback);
-  if (!Number.isFinite(n)) {
+function clampInt(value, min, max, fallback) {
+  const parsed = parseNumber(value, fallback);
+  if (!Number.isFinite(parsed)) {
     return fallback;
   }
-  const limited = Math.max(min, Math.trunc(n));
+  const limited = Math.max(min, Math.trunc(parsed));
   if (max > 0) {
     return Math.min(limited, max);
   }
@@ -99,9 +110,9 @@ async function safeSend(cdp, method, params = {}, sessionId) {
 }
 
 function fetchJson(url) {
-  const reqFn = url.startsWith("https:") ? httpsRequest : httpRequest;
+  const requestFn = url.startsWith("https:") ? httpsRequest : httpRequest;
   return new Promise((resolve, reject) => {
-    const req = reqFn(url, (res) => {
+    const req = requestFn(url, (res) => {
       let data = "";
       res.setEncoding("utf8");
       res.on("data", (chunk) => {
@@ -138,9 +149,9 @@ function getAttr(node, name) {
   if (!node || !Array.isArray(node.attributes)) {
     return null;
   }
-  for (let i = 0; i + 1 < node.attributes.length; i += 2) {
-    if (node.attributes[i] === name) {
-      return node.attributes[i + 1];
+  for (let idx = 0; idx + 1 < node.attributes.length; idx += 2) {
+    if (node.attributes[idx] === name) {
+      return node.attributes[idx + 1];
     }
   }
   return null;
@@ -154,11 +165,11 @@ function quadBounds(quad) {
   let minY = Number.POSITIVE_INFINITY;
   let maxX = Number.NEGATIVE_INFINITY;
   let maxY = Number.NEGATIVE_INFINITY;
-  for (let i = 0; i < quad.length; i += 2) {
-    minX = Math.min(minX, quad[i]);
-    minY = Math.min(minY, quad[i + 1]);
-    maxX = Math.max(maxX, quad[i]);
-    maxY = Math.max(maxY, quad[i + 1]);
+  for (let idx = 0; idx < quad.length; idx += 2) {
+    minX = Math.min(minX, quad[idx]);
+    minY = Math.min(minY, quad[idx + 1]);
+    maxX = Math.max(maxX, quad[idx]);
+    maxY = Math.max(maxY, quad[idx + 1]);
   }
   return {
     x: minX,
@@ -172,7 +183,7 @@ function inspectToolDef() {
   return {
     name: "inspect_selected_element",
     description:
-      "Return the currently selected element from DevTools selection, including description, geometry, and page context.",
+      "Return selected element context from the durable inspect workflow state, including geometry and page metadata.",
     inputSchema: {
       type: "object",
       properties: {
@@ -181,12 +192,12 @@ function inspectToolDef() {
           minimum: DEFAULT_MIN_WAIT_MS,
           default: DEFAULT_WAIT_MS,
           description:
-            "How long to wait for a new inspect selection event before giving up (in ms).",
+            "How long to wait for a new inspect selection event before falling back to recovery behavior (in ms).",
         },
         timeoutMs: {
           type: "number",
           minimum: 0,
-          default: DEFAULT_WAIT_MS,
+          default: DEFAULT_TIMEOUT_MS,
           description:
             "Maximum total wait time for returning a selected element (in ms).",
         },
@@ -200,30 +211,40 @@ function inspectFlowToolDef() {
   return {
     name: "inspect",
     description:
-      "Interactive inspect flow: capture selected element, return a concise summary, then accept user modification instruction for the same workflow.",
+      "Interactive inspect workflow with durable workflow state and polling-friendly lifecycle actions.",
     inputSchema: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["capture", "apply_instruction"],
+          enum: [
+            "begin_capture",
+            "await_selection",
+            "get_status",
+            "capture",
+            "apply_instruction",
+          ],
           default: "capture",
           description:
-            "capture to wait for and read the selected element, apply_instruction to attach a user instruction to the same selection context.",
+            "begin_capture starts a new workflow, await_selection waits for a durable selection, get_status reads current durable workflow state, capture is the legacy one-shot compatibility action, and apply_instruction stores user instruction for the selected element.",
+        },
+        workflowId: {
+          type: "string",
+          description: "Workflow identifier returned from begin_capture or capture.",
         },
         waitForSelectionMs: {
           type: "number",
           minimum: DEFAULT_MIN_WAIT_MS,
           default: DEFAULT_WAIT_MS,
           description:
-            "How long to wait for a new inspect selection event before falling back to polling (in ms).",
+            "Polling/watch backoff hint used while waiting for durable selection state.",
         },
         timeoutMs: {
           type: "number",
           minimum: 0,
           default: 0,
           description:
-            "Maximum total wait time for returning a selected element (in ms). Use 0 to wait until user selects an element.",
+            "Maximum wait for selection. Use 0 to wait indefinitely.",
         },
         instruction: {
           type: "string",
@@ -238,9 +259,7 @@ function inspectFlowToolDef() {
 
 function inspectSummary(payload) {
   const { selectedElement, page, position } = payload;
-  const label = selectedElement.selectorHint
-    ? selectedElement.selectorHint
-    : selectedElement.descriptionText || "(unknown)";
+  const label = selectedElement.selectorHint || selectedElement.descriptionText || "(unknown)";
   const id = selectedElement.id || "(no id)";
   const title = page.title || "(no title)";
   return `${label} (${selectedElement.nodeName || "UNKNOWN"}) [id:${id}] on ${title} at ${page.url || "(no url)"} ` +
@@ -252,31 +271,31 @@ function createCDPSession(wsUrl) {
   const socket = new WebSocket(wsUrl);
   const pending = new Map();
   let messageId = 1;
-  let openResolve;
+  let openedResolve;
   const opened = new Promise((resolve) => {
-    openResolve = resolve;
+    openedResolve = resolve;
   });
   const handlers = [];
 
-  socket.addEventListener("open", () => openResolve());
-  socket.addEventListener("message", (evt) => {
-    const msg = JSON.parse(evt.data);
-    if (msg.id) {
-      const item = pending.get(msg.id);
+  socket.addEventListener("open", () => openedResolve());
+  socket.addEventListener("message", (event) => {
+    const message = JSON.parse(event.data);
+    if (message.id) {
+      const item = pending.get(message.id);
       if (!item) {
         return;
       }
-      pending.delete(msg.id);
-      if (msg.error) {
-        item.reject(msg.error);
+      pending.delete(message.id);
+      if (message.error) {
+        item.reject(message.error);
       } else {
-        item.resolve(msg.result);
+        item.resolve(message.result);
       }
       return;
     }
-    if (msg.method) {
+    if (message.method) {
       for (const handler of handlers) {
-        handler(msg);
+        handler(message);
       }
     }
   });
@@ -286,9 +305,9 @@ function createCDPSession(wsUrl) {
     }
     pending.clear();
   });
-  socket.addEventListener("error", (err) => {
+  socket.addEventListener("error", (event) => {
     for (const item of pending.values()) {
-      item.reject(err.error || err);
+      item.reject(event.error || event);
     }
     pending.clear();
   });
@@ -313,9 +332,258 @@ function createCDPSession(wsUrl) {
 
 function formatSelectionNotReadyMessage(timeoutMs, state) {
   const listened = state.lastObservedError
-    ? "事件监听不可用（可能未返回 Overlay.inspectNodeRequested）"
-    : "未检测到事件推送（可能未开启 Inspect 选择）";
-  return `尚未选中目标元素。已等待 ${timeoutMs}ms，${listened}。建议先在 Chrome 中点击元素后重试。`;
+    ? "event listener reported an issue"
+    : "no inspect selection event was observed";
+  return `No selected element is available yet. Waited ${timeoutMs}ms and ${listened}. Select an element in Chrome inspect mode and retry.`;
+}
+
+export function createInspectStore({
+  rootDir = process.env.CHROME_USE_STATE_DIR || path.join(os.homedir(), ".chrome-use", "state"),
+  debugHost = process.env.CHROME_USE_DEBUG_HOST || "127.0.0.1",
+  debugPort = process.env.CHROME_USE_DEBUG_PORT || "9223",
+} = {}) {
+  const scope = `${String(debugHost).replace(/[^a-zA-Z0-9_.-]/g, "_")}-${String(debugPort).replace(/[^a-zA-Z0-9_.-]/g, "_")}`;
+  const inspectDir = path.join(rootDir, "inspect", scope);
+  const workflowsDir = path.join(inspectDir, "workflows");
+  const eventsDir = path.join(inspectDir, "events");
+  const sessionPath = path.join(inspectDir, "session.json");
+  const currentSelectionPath = path.join(eventsDir, "current-selection.json");
+  return {
+    rootDir,
+    inspectDir,
+    workflowsDir,
+    eventsDir,
+    sessionPath,
+    currentSelectionPath,
+    workflowPath(workflowId) {
+      return path.join(workflowsDir, `${workflowId}.json`);
+    },
+  };
+}
+
+async function ensureInspectStore(store) {
+  await mkdir(store.inspectDir, { recursive: true });
+  await mkdir(store.workflowsDir, { recursive: true });
+  await mkdir(store.eventsDir, { recursive: true });
+}
+
+async function readJsonIfPresent(filePath) {
+  try {
+    return JSON.parse(await readFile(filePath, "utf8"));
+  } catch (err) {
+    if (err?.code === "ENOENT") {
+      return null;
+    }
+    if (err instanceof SyntaxError) {
+      return null;
+    }
+    throw err;
+  }
+}
+
+export async function atomicWriteJson(filePath, data) {
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(tmpPath, JSON.stringify(data, null, 2));
+  await rename(tmpPath, filePath);
+}
+
+function logSignal(event, details = {}) {
+  process.stderr.write(`[chrome-inspect] ${JSON.stringify({
+    event,
+    time: new Date().toISOString(),
+    ...details,
+  })}\n`);
+}
+
+async function initializeStoreState(store, state) {
+  await ensureInspectStore(store);
+  const session = (await readJsonIfPresent(store.sessionPath)) || {};
+  state.storeSequence = Number.isFinite(Number(session.sequence)) ? Number(session.sequence) : 0;
+  state.activeWorkflowId = typeof session.activeWorkflowId === "string" ? session.activeWorkflowId : null;
+}
+
+async function nextSequence(state) {
+  state.storeSequence += 1;
+  return state.storeSequence;
+}
+
+async function persistSessionState(store, state, patch = {}) {
+  const previous = (await readJsonIfPresent(store.sessionPath)) || {};
+  const sequence = await nextSequence(state);
+  const session = {
+    sequence,
+    updatedAt: new Date().toISOString(),
+    activeWorkflowId: state.activeWorkflowId || null,
+    status: patch.status || previous.status || "bridge_ready",
+    lastError: patch.error || previous.lastError || null,
+    targets: [...state.targetInfosByTargetId.values()],
+  };
+  await atomicWriteJson(store.sessionPath, session);
+  return session;
+}
+
+async function persistWorkflowState(store, state, workflowId, patch = {}) {
+  const workflowPath = store.workflowPath(workflowId);
+  const previous = (await readJsonIfPresent(workflowPath)) || { workflowId };
+  const sequence = await nextSequence(state);
+  const workflow = {
+    workflowId,
+    sequence,
+    updatedAt: new Date().toISOString(),
+    createdAt: previous.createdAt || new Date().toISOString(),
+    status: patch.status || previous.status || "waiting_for_selection",
+    phase: patch.phase || previous.phase || null,
+    targetId: patch.targetId !== undefined ? patch.targetId : (previous.targetId || null),
+    page: patch.page !== undefined ? patch.page : (previous.page || null),
+    selectedElement:
+      patch.selectedElement !== undefined ? patch.selectedElement : (previous.selectedElement || null),
+    position: patch.position !== undefined ? patch.position : (previous.position || null),
+    payload: patch.payload !== undefined ? patch.payload : (previous.payload || null),
+    summary: patch.summary !== undefined ? patch.summary : (previous.summary || null),
+    selectionSource:
+      patch.selectionSource !== undefined ? patch.selectionSource : (previous.selectionSource || null),
+    userInstruction:
+      patch.userInstruction !== undefined ? patch.userInstruction : (previous.userInstruction || null),
+    heartbeat: patch.heartbeat !== undefined ? patch.heartbeat : (previous.heartbeat || null),
+    error: patch.error !== undefined ? patch.error : (previous.error || null),
+  };
+  await atomicWriteJson(workflowPath, workflow);
+  return workflow;
+}
+
+async function persistCurrentSelection(store, state, selectionRecord) {
+  const sequence = await nextSequence(state);
+  const event = {
+    sequence,
+    updatedAt: new Date().toISOString(),
+    ...selectionRecord,
+  };
+  await atomicWriteJson(store.currentSelectionPath, event);
+  return event;
+}
+
+async function persistRecoveredSelection(state, workflowId, payload, targetId = null) {
+  return persistCurrentSelection(state.store, state, {
+    workflowId: workflowId || null,
+    status: "selection_received",
+    targetId,
+    page: payload.page,
+    selectedElement: payload.selectedElement,
+    position: payload.position,
+    payload,
+    selectionSource: payload.selectionSource || "page_click",
+  });
+}
+
+function isSelectionReady(workflow) {
+  return workflow?.status === "selection_received" || workflow?.status === "awaiting_user_instruction";
+}
+
+async function readWorkflow(store, workflowId) {
+  if (!workflowId) {
+    return null;
+  }
+  return readJsonIfPresent(store.workflowPath(workflowId));
+}
+
+export async function waitForFileSignal({
+  filePath,
+  predicate,
+  timeoutMs = 0,
+  pollMs = DEFAULT_POLL_MS,
+}) {
+  const start = Date.now();
+  const timeoutAt = timeoutMs > 0 ? start + timeoutMs : Number.POSITIVE_INFINITY;
+  const parentDir = path.dirname(filePath);
+
+  const readCurrent = async () => {
+    const current = await readJsonIfPresent(filePath);
+    if (current && predicate(current)) {
+      return current;
+    }
+    return null;
+  };
+
+  const immediate = await readCurrent();
+  if (immediate) {
+    return immediate;
+  }
+
+  let watcher;
+  let resolvePromise;
+  let settled = false;
+  let pollTimer = null;
+  let timeoutTimer = null;
+
+  const cleanup = async () => {
+    settled = true;
+    if (watcher) {
+      try {
+        await watcher.close();
+      } catch {
+        // Ignore cleanup errors.
+      }
+    }
+    if (pollTimer) {
+      clearInterval(pollTimer);
+    }
+    if (timeoutTimer) {
+      clearTimeout(timeoutTimer);
+    }
+  };
+
+  const maybeResolve = async () => {
+    if (settled) {
+      return;
+    }
+    const current = await readCurrent();
+    if (!current) {
+      return;
+    }
+    await cleanup();
+    resolvePromise(current);
+  };
+
+  return new Promise(async (resolve, reject) => {
+    resolvePromise = resolve;
+
+    try {
+      watcher = await fsWatch(parentDir);
+      (async () => {
+        try {
+          for await (const event of watcher) {
+            if (settled) {
+              return;
+            }
+            if (event.filename && event.filename !== path.basename(filePath)) {
+              continue;
+            }
+            await maybeResolve();
+          }
+        } catch (err) {
+          if (!settled) {
+            logSignal("watch_error", { filePath, error: err?.message || String(err) });
+          }
+        }
+      })();
+    } catch (err) {
+      logSignal("watch_unavailable", { filePath, error: err?.message || String(err) });
+    }
+
+    pollTimer = setInterval(() => {
+      void maybeResolve();
+      if (Date.now() >= timeoutAt) {
+        void cleanup().then(() => resolve(null));
+      }
+    }, pollMs);
+
+    if (timeoutMs > 0) {
+      timeoutTimer = setTimeout(() => {
+        void cleanup().then(() => resolve(null));
+      }, timeoutMs);
+    }
+  });
 }
 
 async function resolveSelectedElementPayload(
@@ -324,6 +592,7 @@ async function resolveSelectedElementPayload(
   sessionState,
   pageInfo,
   explicitSelection = null,
+  selectionSource = "overlay_event",
 ) {
   const activeCdp = sessionState?.cdp || cdp;
   const selection = explicitSelection || state.lastSelectionEvent;
@@ -334,12 +603,14 @@ async function resolveSelectedElementPayload(
       : directSession
         ? null
         : sessionState.sessionId;
+
   if (!selection) {
-    throw new Error("尚未选中元素（未收到 Selection 事件）。请在 Chrome 中先点击 Inspect 并选中一个节点后重试。");
+    throw new Error("No selected element is available yet. Select a node in Chrome inspect mode and retry.");
   }
+
   let backendNodeId = selection.backendNodeId || selection.nodeId;
   if (!backendNodeId) {
-    throw new Error("选中事件无可映射标识（缺少 backendNodeId/nodeId），请重试并重新选中该元素。");
+    throw new Error("Selection event did not include backendNodeId or nodeId. Re-select the element and retry.");
   }
 
   let nodeId = selection.nodeId;
@@ -365,30 +636,27 @@ async function resolveSelectedElementPayload(
   try {
     const box = await activeCdp.send("DOM.getBoxModel", { nodeId }, sessionId);
     model = box?.model || null;
-  } catch (_err) {}
+  } catch {
+    // Ignore box model failures.
+  }
 
   let snippet = "";
   try {
-      const outer = await activeCdp.send("DOM.getOuterHTML", { nodeId }, sessionId);
+    const outer = await activeCdp.send("DOM.getOuterHTML", { nodeId }, sessionId);
     snippet = safeTruncate(outer?.outerHTML || "", DEFAULT_TRUNCATE);
-  } catch (_err) {
+  } catch {
     try {
-      const outer = await activeCdp.send(
-        "DOM.getOuterHTML",
-        { backendNodeId },
-        sessionId,
-      );
+      const outer = await activeCdp.send("DOM.getOuterHTML", { backendNodeId }, sessionId);
       snippet = safeTruncate(outer?.outerHTML || "", DEFAULT_TRUNCATE);
-    } catch (_innerErr) {}
+    } catch {
+      // Ignore outer HTML failures.
+    }
   }
 
   const hintCandidates = [
     id ? `#${id}` : null,
     className
-      ? `${nodeName.toLowerCase()}.${className
-          .split(/\s+/)
-          .filter(Boolean)
-          .join(".")}`
+      ? `${nodeName.toLowerCase()}.${className.split(/\s+/).filter(Boolean).join(".")}`
       : null,
     nodeName.toLowerCase(),
   ].filter(Boolean);
@@ -396,7 +664,6 @@ async function resolveSelectedElementPayload(
   const usedQuad = model?.content || model?.border || model?.padding || null;
   const bounds = quadBounds(usedQuad);
   const quads = usedQuad && usedQuad.length >= 8 ? [usedQuad] : [];
-  const ariaLabel = getAttr(node, "aria-label");
 
   return {
     selectedElement: {
@@ -404,12 +671,8 @@ async function resolveSelectedElementPayload(
       nodeName,
       id: id || null,
       className: className || null,
-      ariaLabel,
-      descriptionText: [
-        nodeName,
-        id ? `#${id}` : "",
-        className ? `.${className.split(/\s+/).join(".")}` : "",
-      ]
+      ariaLabel: getAttr(node, "aria-label"),
+      descriptionText: [nodeName, id ? `#${id}` : "", className ? `.${className.split(/\s+/).join(".")}` : ""]
         .filter(Boolean)
         .join(" "),
       selectorHint: hintCandidates[0] || null,
@@ -428,6 +691,7 @@ async function resolveSelectedElementPayload(
       pageId: pageInfo.targetId || null,
       frameId: selection.frameId || null,
     },
+    selectionSource,
     observedAt: new Date(selection.eventTime).toISOString(),
   };
 }
@@ -471,30 +735,414 @@ function notifySelectionWaiters(state, selection) {
   }
 }
 
-async function resolveSelectionByActiveElement(cdp, state, sessionState, pageInfo) {
+function getSessionRuntime(sessionState, cdp) {
   const activeCdp = sessionState?.cdp || cdp;
   const sessionId =
-    sessionState?.sessionId && !String(sessionState?.sessionId).startsWith("direct:")
+    sessionState?.sessionId && !String(sessionState.sessionId).startsWith("direct:")
       ? sessionState.sessionId
       : null;
-  if (!activeCdp && !sessionId) {
+  return { activeCdp, sessionId };
+}
+
+async function setInspectModeForSession(cdp, sessionState, mode) {
+  const { activeCdp, sessionId } = getSessionRuntime(sessionState, cdp);
+  const params = mode === "none"
+    ? { mode: "none" }
+    : {
+        mode: "searchForNode",
+        highlightConfig: {
+          showInfo: true,
+          showStyles: true,
+          showRulers: false,
+          contentColor: { r: 255, g: 102, b: 0, a: 0.15 },
+          paddingColor: { r: 255, g: 170, b: 102, a: 0.2 },
+          borderColor: { r: 255, g: 102, b: 0, a: 0.5 },
+          marginColor: { r: 255, g: 204, b: 153, a: 0.2 },
+        },
+      };
+  return safeSend(activeCdp, "Overlay.setInspectMode", params, sessionId);
+}
+
+async function installPageSelectionCapture(cdp, state, sessionState, workflowId) {
+  const { activeCdp, sessionId } = getSessionRuntime(sessionState, cdp);
+  const expression = `(() => {
+    const key = "__chromeInspectAgentState";
+    const state = window[key] || (window[key] = {});
+    const sameWorkflow = state.workflowId === ${JSON.stringify(workflowId)};
+    state.workflowId = ${JSON.stringify(workflowId)};
+    if (!sameWorkflow) {
+      state.selected = null;
+      state.selectedElement = null;
+      state.cancelled = false;
+      state.armedAt = Date.now();
+    } else {
+      state.cancelled = false;
+      state.armedAt = state.armedAt || Date.now();
+    }
+
+    if (state.listenerInstalled) {
+      if (state.highlighted) {
+        state.highlighted.style.outline = state.previousOutline || "";
+        state.highlighted.style.outlineOffset = state.previousOutlineOffset || "";
+      }
+      if (state.handleMove) document.removeEventListener("mousemove", state.handleMove, true);
+      if (state.handleClick) document.removeEventListener("click", state.handleClick, true);
+      if (state.handleKeydown) document.removeEventListener("keydown", state.handleKeydown, true);
+      if (state.heartbeatTimer) window.clearInterval(state.heartbeatTimer);
+      if (state.banner && state.banner.isConnected) state.banner.remove();
+      state.listenerInstalled = false;
+      state.handleMove = null;
+      state.handleClick = null;
+      state.handleKeydown = null;
+      state.heartbeatTimer = null;
+      state.banner = null;
+      state.highlighted = null;
+      state.previousOutline = "";
+      state.previousOutlineOffset = "";
+    }
+
+    if (!state.listenerInstalled) {
+      state.listenerInstalled = true;
+      state.previousCursor = document.documentElement.style.cursor || "";
+      state.highlighted = null;
+      state.previousOutline = "";
+      state.previousOutlineOffset = "";
+      state.banner = null;
+      state.heartbeatTimer = null;
+
+      state.renderBanner = (message, accent = "#ff6600") => {
+        let banner = state.banner;
+        if (!banner || !banner.isConnected) {
+          banner = document.createElement("div");
+          banner.setAttribute("data-chrome-inspect-banner", "true");
+          banner.style.position = "fixed";
+          banner.style.top = "16px";
+          banner.style.right = "16px";
+          banner.style.zIndex = "2147483647";
+          banner.style.maxWidth = "360px";
+          banner.style.padding = "12px 14px";
+          banner.style.borderRadius = "12px";
+          banner.style.background = "rgba(18, 18, 18, 0.92)";
+          banner.style.color = "#fff";
+          banner.style.font = "600 13px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+          banner.style.boxShadow = "0 12px 36px rgba(0,0,0,0.35)";
+          banner.style.border = "2px solid " + accent;
+          banner.style.pointerEvents = "none";
+          banner.style.whiteSpace = "pre-wrap";
+          document.documentElement.appendChild(banner);
+          state.banner = banner;
+        }
+        banner.style.borderColor = accent;
+        banner.textContent = message;
+      };
+
+      state.updateHeartbeat = () => {
+        const current = window[key];
+        if (!current) return;
+        current.heartbeat = {
+          at: Date.now(),
+          workflowId: current.workflowId || null,
+          hoveredTagName: current.highlighted ? current.highlighted.tagName : null,
+          hoveredId: current.highlighted && current.highlighted.id ? current.highlighted.id : null,
+          hoveredClassName: current.highlighted && typeof current.highlighted.className === "string"
+            ? current.highlighted.className
+            : null,
+          selected: current.selected || null,
+          cancelled: !!current.cancelled
+        };
+      };
+
+      state.handleMove = (event) => {
+        const el = event.target instanceof Element ? event.target : null;
+        if (!el) return;
+        if (state.highlighted && state.highlighted !== el) {
+          state.highlighted.style.outline = state.previousOutline;
+          state.highlighted.style.outlineOffset = state.previousOutlineOffset;
+        }
+        if (state.highlighted !== el) {
+          state.previousOutline = el.style.outline || "";
+          state.previousOutlineOffset = el.style.outlineOffset || "";
+        }
+        state.highlighted = el;
+        el.style.outline = "2px solid #ff6600";
+        el.style.outlineOffset = "2px";
+        state.updateHeartbeat();
+      };
+
+      state.handleClick = (event) => {
+        const current = window[key];
+        if (!current || !current.workflowId) return;
+        const el = event.target instanceof Element ? event.target : null;
+        if (!el) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof event.stopImmediatePropagation === "function") {
+          event.stopImmediatePropagation();
+        }
+        current.selectedElement = el;
+        current.selected = {
+          workflowId: current.workflowId,
+          at: Date.now(),
+          tagName: el.tagName,
+          id: el.id || null,
+          className: typeof el.className === "string" ? el.className : null,
+          clientX: typeof event.clientX === "number" ? event.clientX : null,
+          clientY: typeof event.clientY === "number" ? event.clientY : null
+        };
+        current.updateHeartbeat();
+        current.renderBanner("Element selected. Return to the agent for the next step.", "#1a9c5a");
+      };
+
+      state.handleKeydown = (event) => {
+        const current = window[key];
+        if (!current) return;
+        if (event.key === "Escape") {
+          current.cancelled = true;
+          current.selected = null;
+          current.selectedElement = null;
+          current.updateHeartbeat();
+          current.renderBanner("Selection cancelled. Start capture again when ready.", "#cc3344");
+        }
+      };
+
+      document.addEventListener("mousemove", state.handleMove, true);
+      document.addEventListener("click", state.handleClick, true);
+      document.addEventListener("keydown", state.handleKeydown, true);
+      state.heartbeatTimer = window.setInterval(() => state.updateHeartbeat(), 1000);
+    }
+
+    document.documentElement.style.cursor = "crosshair";
+    if (state.selected) {
+      state.renderBanner("Element selected. Return to the agent for the next step.", "#1a9c5a");
+    } else {
+      state.renderBanner("Chrome Inspect is armed. Click any element on the page to select it.\\nPress Esc to cancel.", "#ff6600");
+    }
+    state.updateHeartbeat();
+    return { workflowId: state.workflowId, armedAt: state.armedAt };
+  })()`;
+
+  await activeCdp.send(
+    "Runtime.evaluate",
+    { expression, returnByValue: true, awaitPromise: true },
+    sessionId,
+  );
+
+  const inspectModeResult = await setInspectModeForSession(cdp, sessionState, "searchForNode");
+  if (!inspectModeResult.ok) {
+    const detail = inspectModeResult.error?.message || inspectModeResult.error || "unknown error";
+    state.lastObservedError = `Overlay.setInspectMode unavailable for target ${sessionState?.targetId || "unknown"}: ${detail}`;
+    logSignal("inspect_mode_arm_error", {
+      workflowId,
+      targetId: sessionState?.targetId || null,
+      error: state.lastObservedError,
+    });
+  } else {
+    logSignal("inspect_mode_armed", { workflowId, targetId: sessionState?.targetId || null });
+  }
+}
+
+async function clearPageSelectionCapture(cdp, sessionState) {
+  const { activeCdp, sessionId } = getSessionRuntime(sessionState, cdp);
+  const expression = `(() => {
+    const state = window.__chromeInspectAgentState;
+    if (!state) return false;
+    if (state.highlighted) {
+      state.highlighted.style.outline = state.previousOutline || "";
+      state.highlighted.style.outlineOffset = state.previousOutlineOffset || "";
+    }
+    if (state.handleMove) document.removeEventListener("mousemove", state.handleMove, true);
+    if (state.handleClick) document.removeEventListener("click", state.handleClick, true);
+    if (state.handleKeydown) document.removeEventListener("keydown", state.handleKeydown, true);
+    if (state.heartbeatTimer) window.clearInterval(state.heartbeatTimer);
+    if (state.banner && state.banner.isConnected) state.banner.remove();
+    document.documentElement.style.cursor = state.previousCursor || "";
+    delete window.__chromeInspectAgentState;
+    return true;
+  })()`;
+  try {
+    await activeCdp.send(
+      "Runtime.evaluate",
+      { expression, returnByValue: true, awaitPromise: true },
+      sessionId,
+    );
+  } catch {
+    // Ignore cleanup failures on navigation/closed targets.
+  }
+  await setInspectModeForSession(cdp, sessionState, "none");
+}
+
+async function armPageSelectionCapture(cdp, state, workflowId) {
+  const targetIds = [...state.targetsById.keys()];
+  for (const targetId of targetIds) {
+    const sessionState = state.targetsById.get(targetId);
+    if (!sessionState) {
+      continue;
+    }
+    try {
+      await installPageSelectionCapture(cdp, state, sessionState, workflowId);
+      logSignal("page_capture_armed", { workflowId, targetId });
+    } catch (err) {
+      state.lastObservedError = `page capture arm failed for ${targetId}: ${err?.message || err}`;
+      logSignal("page_capture_arm_error", { workflowId, targetId, error: state.lastObservedError });
+    }
+  }
+}
+
+async function resolveSelectionByPageClick(cdp, state, sessionState, pageInfo, workflowId) {
+  const { activeCdp, sessionId } = getSessionRuntime(sessionState, cdp);
+
+  let metaResult = null;
+  try {
+    metaResult = await activeCdp.send(
+      "Runtime.evaluate",
+      {
+        expression: `(() => {
+          const state = window.__chromeInspectAgentState;
+          if (!state || state.workflowId !== ${JSON.stringify(workflowId)}) return null;
+          if (state.cancelled) return { cancelled: true, workflowId: state.workflowId };
+          return state.selected ? { ...state.selected } : null;
+        })()`,
+        returnByValue: true,
+        awaitPromise: true,
+      },
+      sessionId,
+    );
+  } catch {
     return null;
   }
+
+  const meta = metaResult?.result?.value || null;
+  if (!meta) {
+    return null;
+  }
+  if (meta.cancelled) {
+    throw new Error("Page selection was cancelled with Escape. Start capture again to select an element.");
+  }
+
+  let nodeId = null;
+  let backendNodeId = null;
+  if (typeof meta.clientX === "number" && typeof meta.clientY === "number") {
+    try {
+      const hit = await activeCdp.send(
+        "DOM.getNodeForLocation",
+        {
+          x: Math.round(meta.clientX),
+          y: Math.round(meta.clientY),
+          includeUserAgentShadowDOM: true,
+          ignorePointerEventsNone: true,
+        },
+        sessionId,
+      );
+      nodeId = hit?.nodeId || null;
+      backendNodeId = hit?.backendNodeId || null;
+    } catch {
+      nodeId = null;
+      backendNodeId = null;
+    }
+  }
+
+  if (!nodeId) {
+    let selectedElementHandle = null;
+    try {
+      selectedElementHandle = await activeCdp.send(
+        "Runtime.evaluate",
+        {
+          expression: `(() => {
+            const state = window.__chromeInspectAgentState;
+            if (!state || state.workflowId !== ${JSON.stringify(workflowId)}) return null;
+            return state.selectedElement || null;
+          })()`,
+          returnByValue: false,
+          awaitPromise: true,
+        },
+        sessionId,
+      );
+    } catch {
+      selectedElementHandle = null;
+    }
+
+    const objectId = selectedElementHandle?.result?.objectId;
+    if (objectId) {
+      try {
+        const request = await activeCdp.send("DOM.requestNode", { objectId }, sessionId);
+        nodeId = request?.nodeId || null;
+      } catch {
+        nodeId = null;
+      }
+    }
+  }
+  if (!nodeId && !backendNodeId) {
+    return null;
+  }
+
+  const syntheticSelection = {
+    backendNodeId: backendNodeId || null,
+    nodeId,
+    targetId: sessionState.targetId,
+    frameId: sessionState.frameId || pageInfo.frameId || null,
+    eventTime: meta.at || Date.now(),
+    selectionSource: "page_click",
+  };
+
+  if (!syntheticSelection.backendNodeId && !syntheticSelection.nodeId) {
+    return null;
+  }
+
+  return resolveSelectedElementPayload(
+    cdp,
+    state,
+    sessionState,
+    pageInfo,
+    syntheticSelection,
+    "page_click",
+  );
+}
+
+async function readPageCaptureHeartbeat(cdp, sessionState, workflowId) {
+  const { activeCdp, sessionId } = getSessionRuntime(sessionState, cdp);
+  try {
+    const result = await activeCdp.send(
+      "Runtime.evaluate",
+      {
+        expression: `(() => {
+          const s = window.__chromeInspectAgentState;
+          if (!s || s.workflowId !== ${JSON.stringify(workflowId)}) return null;
+          return {
+            heartbeat: s.heartbeat || null,
+            selected: s.selected || null,
+            cancelled: !!s.cancelled,
+            armedAt: s.armedAt || null,
+            listenerInstalled: !!s.listenerInstalled
+          };
+        })()`,
+        returnByValue: true,
+        awaitPromise: true,
+      },
+      sessionId,
+    );
+    return result?.result?.value || null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveSelectionByActiveElement(cdp, state, sessionState, pageInfo) {
+  const { activeCdp, sessionId } = getSessionRuntime(sessionState, cdp);
 
   let activeResult = null;
   try {
     activeResult = await activeCdp.send(
       "Runtime.evaluate",
       {
-        expression:
-          "document && document.activeElement ? document.activeElement : null",
+        expression: "document && document.activeElement ? document.activeElement : null",
         returnByValue: false,
       },
       sessionId,
     );
-  } catch (_err) {
+  } catch {
     return null;
   }
+
   const objectId = activeResult?.result?.objectId;
   if (!objectId) {
     return null;
@@ -504,7 +1152,9 @@ async function resolveSelectionByActiveElement(cdp, state, sessionState, pageInf
   try {
     const request = await activeCdp.send("DOM.requestNode", { objectId }, sessionId);
     nodeId = request?.nodeId;
-  } catch (_err) {}
+  } catch {
+    return null;
+  }
   if (!nodeId) {
     return null;
   }
@@ -512,8 +1162,9 @@ async function resolveSelectionByActiveElement(cdp, state, sessionState, pageInf
   let described = null;
   try {
     described = await activeCdp.send("DOM.describeNode", { nodeId }, sessionId);
-  } catch (_err) {}
-
+  } catch {
+    return null;
+  }
   const describedNode = described?.node || {};
   if (!describedNode.nodeName || describedNode.nodeName === "HTML") {
     return null;
@@ -537,21 +1188,18 @@ async function resolveSelectionByActiveElement(cdp, state, sessionState, pageInf
     sessionState,
     pageInfo,
     syntheticSelection,
+    "active_element_fallback",
   );
 }
 
 async function materializeSelectionPayload(cdp, state, selection) {
   if (!selection || !selection.targetId) {
-    throw new Error(
-      "尚未选中元素（未收到 Selection 事件）。请在 Chrome 中先点击 Inspect 并选中一个节点后重试。",
-    );
+    throw new Error("No selected element is available yet. Select a node in Chrome inspect mode and retry.");
   }
-
   const sessionState = state.targetsById.get(selection.targetId);
   if (!sessionState || (!sessionState.sessionId && !sessionState.cdp)) {
-    throw new Error("未匹配到当前选中元素所在页面，建议重新选中元素后重试。");
+    throw new Error("Could not match the selected element to a live page target. Re-select the element and retry.");
   }
-
   const basePageInfo = state.targetInfosByTargetId.get(selection.targetId) || {};
   const pageInfo = {
     ...basePageInfo,
@@ -563,169 +1211,427 @@ async function materializeSelectionPayload(cdp, state, selection) {
     sessionState,
     pageInfo,
     selection,
+    selection.selectionSource || "overlay_event",
   );
 }
 
-async function resolveSelectionOnDemandBlocking(cdp, state, { waitForSelectionMs }) {
-  const startedAt = Date.now();
-  const waitMs = Math.max(DEFAULT_MIN_WAIT_MS, waitForSelectionMs);
+async function resolveLatestSelection(state, cdp, waitForSelectionMs, timeoutMs) {
+  const currentSelection = await readJsonIfPresent(state.store.currentSelectionPath);
+  if (currentSelection?.payload?.selectedElement) {
+    return currentSelection.payload;
+  }
 
-  while (true) {
-    if (!state.targetsById.size || cdp.isClosed?.()) {
-      throw new Error(
-        "未发现可用的检查会话，请先在 Chrome 打开页面并切换到 inspect 模式后重试。",
-      );
-    }
+  const start = Date.now();
+  const deadline = timeoutMs > 0 ? start + timeoutMs : Number.POSITIVE_INFINITY;
 
-    const selection = await waitForSelection(state, waitMs, startedAt);
+  while (Date.now() < deadline) {
+    const selection = await waitForSelection(
+      state,
+      Math.min(waitForSelectionMs, Math.max(0, deadline - Date.now())),
+      start,
+    );
     if (selection) {
       return materializeSelectionPayload(cdp, state, selection);
     }
 
     for (const [targetId, sessionState] of state.targetsById) {
       const pageInfo = state.targetInfosByTargetId.get(targetId) || {};
-      const fromActive = await resolveSelectionByActiveElement(
-        cdp,
-        state,
-        sessionState,
-        pageInfo,
-      );
-      if (fromActive) {
-        return fromActive;
-      }
-    }
-
-    await sleep(250);
-  }
-}
-
-async function resolveSelectionOnDemand(cdp, state, { waitForSelectionMs, timeoutMs }) {
-  const start = Date.now();
-  const deadline = start + timeoutMs;
-  const primaryWait = Math.min(waitForSelectionMs, timeoutMs);
-  const first = await waitForSelection(state, primaryWait, start);
-
-  let selection = first || null;
-  if (!selection || !selection.targetId) {
-    const pollInterval = 250;
-    while (Date.now() < deadline) {
-      for (const [targetId, sessionState] of state.targetsById) {
-        const pageInfo = state.targetInfosByTargetId.get(targetId) || {};
-        const fromActive = await resolveSelectionByActiveElement(
+      const activeWorkflowId = state.activeWorkflowId;
+      if (activeWorkflowId) {
+        const pageClickPayload = await resolveSelectionByPageClick(
           cdp,
           state,
           sessionState,
           pageInfo,
+          activeWorkflowId,
         );
-        if (fromActive) {
-          return fromActive;
+        if (pageClickPayload) {
+          return pageClickPayload;
         }
       }
-
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) {
-        break;
-      }
-      await sleep(Math.min(pollInterval, remaining));
-      if (state.lastSelectionEvent && state.lastSelectionEvent.eventTime >= start) {
-        selection = state.lastSelectionEvent;
-        break;
+      const payload = await resolveSelectionByActiveElement(cdp, state, sessionState, pageInfo);
+      if (payload) {
+        return payload;
       }
     }
 
-    const observedSelection = state.lastSelectionEvent;
-    if (!selection && (!observedSelection || observedSelection.eventTime < start)) {
-      throw new Error(
-        formatSelectionNotReadyMessage(timeoutMs, state),
-      );
-    }
-    if (!selection) {
-      selection = observedSelection;
+    if (timeoutMs === 0) {
+      await sleep(DEFAULT_POLL_MS);
+    } else if (Date.now() >= deadline) {
+      break;
+    } else {
+      await sleep(Math.min(DEFAULT_POLL_MS, deadline - Date.now()));
     }
   }
 
-  return materializeSelectionPayload(cdp, state, selection);
+  throw new Error(formatSelectionNotReadyMessage(timeoutMs, state));
 }
 
-async function runInspectFlow(cdp, state, args, messageId) {
-  const action = args.action === "apply_instruction" ? "apply_instruction" : "capture";
+async function tryResolveLatestSelection(state, cdp, waitForSelectionMs, timeoutMs) {
+  try {
+    return await resolveLatestSelection(state, cdp, waitForSelectionMs, timeoutMs);
+  } catch (err) {
+    const message = String(err?.message || "");
+    if (message.startsWith("No selected element is available yet.")) {
+      return null;
+    }
+    throw err;
+  }
+}
+
+async function createCaptureWorkflow(state) {
+  const workflowId = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  state.activeWorkflowId = workflowId;
+  const workflow = await persistWorkflowState(state.store, state, workflowId, {
+    status: "waiting_for_selection",
+    phase: "waiting_for_selection",
+  });
+  await persistSessionState(state.store, state, { status: "waiting_for_selection" });
+  logSignal("workflow_created", { workflowId, sequence: workflow.sequence });
+  return workflow;
+}
+
+function workflowToAwaitingPayload(workflow) {
+  const payload = workflow.payload;
+  return {
+    phase: "awaiting_user_instruction",
+    workflowId: workflow.workflowId,
+    status: "awaiting_user_instruction",
+    summary: workflow.summary || inspectSummary(payload),
+    selectedElement: payload.selectedElement,
+    position: payload.position,
+    page: payload.page,
+    selectionSource: workflow.selectionSource || payload.selectionSource || null,
+    nextStep: {
+      action: "apply_instruction",
+      workflowId: workflow.workflowId,
+      instruction: "How should I edit it?",
+    },
+  };
+}
+
+async function awaitWorkflowSelection(state, cdp, workflowId, waitForSelectionMs, timeoutMs) {
+  let workflow = await readWorkflow(state.store, workflowId);
+  if (!workflow) {
+    throw new Error(`Unknown inspect workflow: ${workflowId}`);
+  }
+  if (isSelectionReady(workflow) && workflow.payload) {
+    return workflowToAwaitingPayload(workflow);
+  }
+  if (workflow.status === "ready_to_apply" && workflow.payload) {
+    return workflowToAwaitingPayload(workflow);
+  }
+  if (workflow.status === "browser_disconnected") {
+    throw new Error("The browser inspect session disconnected before a selection was recorded.");
+  }
+  if (workflow.status === "error") {
+    throw new Error(workflow.error || "The inspect workflow entered an error state.");
+  }
+
+  logSignal("waiting_for_selection", { workflowId, timeoutMs });
+
+  const pollMs = Math.max(DEFAULT_POLL_MS, Math.min(waitForSelectionMs, 1000));
+  const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : Number.POSITIVE_INFINITY;
+
+  while (true) {
+    const remaining = deadline - Date.now();
+    const chunkTimeout = Number.isFinite(deadline)
+      ? Math.max(0, Math.min(pollMs, remaining))
+      : pollMs;
+
+    const observed = await waitForFileSignal({
+      filePath: state.store.workflowPath(workflowId),
+      predicate: (candidate) =>
+        candidate?.status === "selection_received" ||
+        candidate?.status === "awaiting_user_instruction" ||
+        candidate?.status === "ready_to_apply" ||
+        candidate?.status === "browser_disconnected" ||
+        candidate?.status === "error",
+      timeoutMs: chunkTimeout,
+      pollMs,
+    });
+
+    workflow = observed || (await readWorkflow(state.store, workflowId));
+    if (isSelectionReady(workflow) && workflow?.payload) {
+      const finalized = await persistWorkflowState(state.store, state, workflowId, {
+        status: "awaiting_user_instruction",
+        phase: "awaiting_user_instruction",
+        payload: workflow.payload,
+        selectedElement: workflow.payload.selectedElement,
+        position: workflow.payload.position,
+        page: workflow.payload.page,
+        summary: workflow.summary || inspectSummary(workflow.payload),
+        selectionSource: workflow.selectionSource || workflow.payload.selectionSource || null,
+      });
+      await persistSessionState(state.store, state, { status: "bridge_ready" });
+      return workflowToAwaitingPayload(finalized);
+    }
+
+    if (workflow?.status === "browser_disconnected") {
+      throw new Error("The browser inspect session disconnected before a selection was recorded.");
+    }
+    if (workflow?.status === "error") {
+      throw new Error(workflow.error || "The inspect workflow entered an error state.");
+    }
+
+    let heartbeat = null;
+    for (const sessionState of state.targetsById.values()) {
+      const captureState = await readPageCaptureHeartbeat(cdp, sessionState, workflowId);
+      if (!captureState) {
+        continue;
+      }
+      heartbeat = captureState;
+      break;
+    }
+    if (heartbeat) {
+      workflow = await persistWorkflowState(state.store, state, workflowId, {
+        status: "waiting_for_selection",
+        phase: "waiting_for_selection",
+        error: heartbeat.cancelled
+          ? "Selection cancelled on page. Start capture again."
+          : null,
+        payload: workflow?.payload || null,
+        selectedElement: workflow?.selectedElement || null,
+        position: workflow?.position || null,
+        page: workflow?.page || null,
+        summary: workflow?.summary || null,
+        selectionSource: workflow?.selectionSource || null,
+        heartbeat,
+      });
+    }
+
+    const fallback = await tryResolveLatestSelection(state, cdp, waitForSelectionMs, pollMs);
+    if (fallback) {
+      await persistRecoveredSelection(state, workflowId, fallback);
+      const recovered = await persistWorkflowState(state.store, state, workflowId, {
+        status: "awaiting_user_instruction",
+        phase: "awaiting_user_instruction",
+        payload: fallback,
+        selectedElement: fallback.selectedElement,
+        position: fallback.position,
+        page: fallback.page,
+        summary: inspectSummary(fallback),
+        selectionSource: fallback.selectionSource || "active_element_fallback",
+      });
+      await persistSessionState(state.store, state, { status: "bridge_ready" });
+      return workflowToAwaitingPayload(recovered);
+    }
+
+    if (Date.now() >= deadline) {
+      break;
+    }
+  }
+
+  if (!workflow || workflow.status === "waiting_for_selection") {
+    const fallback = await resolveLatestSelection(
+      state,
+      cdp,
+      waitForSelectionMs,
+      timeoutMs === 0 ? waitForSelectionMs * 2 : timeoutMs,
+    );
+    await persistRecoveredSelection(state, workflowId, fallback);
+    const recovered = await persistWorkflowState(state.store, state, workflowId, {
+      status: "awaiting_user_instruction",
+      phase: "awaiting_user_instruction",
+      payload: fallback,
+      selectedElement: fallback.selectedElement,
+      position: fallback.position,
+      page: fallback.page,
+      summary: inspectSummary(fallback),
+      selectionSource: fallback.selectionSource || "active_element_fallback",
+    });
+    return workflowToAwaitingPayload(recovered);
+  }
+
+  if (workflow.status === "browser_disconnected") {
+    throw new Error("The browser inspect session disconnected before a selection was recorded.");
+  }
+  if (workflow.status === "error") {
+    throw new Error(workflow.error || "The inspect workflow entered an error state.");
+  }
+
+  throw new Error(formatSelectionNotReadyMessage(timeoutMs, state));
+}
+
+export async function handleInspectAction(cdp, state, args, messageId) {
+  const action = typeof args.action === "string" ? args.action : "capture";
   const waitForSelectionMs = clampInt(args.waitForSelectionMs, DEFAULT_MIN_WAIT_MS, 60000, DEFAULT_WAIT_MS);
-  const timeoutMs = clampInt(args.timeoutMs, 0, 60000, DEFAULT_TIMEOUT_MS);
+  const timeoutMs = clampInt(args.timeoutMs, 0, 60000, action === "capture" ? 0 : DEFAULT_TIMEOUT_MS);
+
+  if (action === "begin_capture") {
+    const workflow = await createCaptureWorkflow(state);
+    await armPageSelectionCapture(cdp, state, workflow.workflowId);
+    return {
+      phase: "waiting_for_selection",
+      workflowId: workflow.workflowId,
+      status: "waiting_for_selection",
+      sequence: workflow.sequence,
+    };
+  }
+
+  if (action === "get_status") {
+    const workflow = await readWorkflow(state.store, args.workflowId);
+    if (!workflow) {
+      throw new Error(`Unknown inspect workflow: ${args.workflowId || "(missing workflowId)"}`);
+    }
+    return workflow.payload && isSelectionReady(workflow)
+      ? workflowToAwaitingPayload(workflow)
+      : {
+          phase: workflow.phase || workflow.status,
+          workflowId: workflow.workflowId,
+          status: workflow.status,
+          sequence: workflow.sequence,
+          error: workflow.error || null,
+        };
+  }
+
+  if (action === "await_selection") {
+    if (typeof args.workflowId !== "string" || !args.workflowId.trim()) {
+      throw new Error("inspect(action='await_selection') requires workflowId.");
+    }
+    return awaitWorkflowSelection(state, cdp, args.workflowId.trim(), waitForSelectionMs, timeoutMs);
+  }
 
   if (action === "capture") {
-    const payload =
-      timeoutMs > 0
-        ? await resolveSelectionOnDemand(cdp, state, {
-            waitForSelectionMs,
-            timeoutMs,
-          })
-        : await resolveSelectionOnDemandBlocking(cdp, state, {
-            waitForSelectionMs,
-          });
-
-    const workflow = {
-      workflowId: `${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
-      payload,
-      status: "awaiting_instruction",
-      createdAt: Date.now(),
-    };
-    state.inspectWorkflow = workflow;
-
-    return {
-      phase: "awaiting_user_instruction",
-      workflowId: workflow.workflowId,
-      status: "awaiting_user_instruction",
-      summary: inspectSummary(payload),
-      selectedElement: payload.selectedElement,
-      position: payload.position,
-      page: payload.page,
-      nextStep: {
-        action: "apply_instruction",
-        instruction: "你要怎么改？请给出具体 DOM 修改指令。",
-      },
-    };
+    const workflow = await createCaptureWorkflow(state);
+    await armPageSelectionCapture(cdp, state, workflow.workflowId);
+    return awaitWorkflowSelection(state, cdp, workflow.workflowId, waitForSelectionMs, timeoutMs);
   }
 
-  if (!state.inspectWorkflow || state.inspectWorkflow.status !== "awaiting_instruction") {
-    throw new Error("当前没有可用的 inspect 会话。请先执行 inspect(action='capture') 获取一次选中结果。");
+  if (action !== "apply_instruction") {
+    throw new Error(`Unsupported inspect action: ${action}`);
   }
 
-  if (!state.targetsById.size || cdp.isClosed?.()) {
-    state.inspectWorkflow = null;
-    throw new Error("会话已失效或浏览器连接断开，请重新执行 inspect(action='capture')。");
+  const workflowId =
+    typeof args.workflowId === "string" && args.workflowId.trim()
+      ? args.workflowId.trim()
+      : state.activeWorkflowId;
+  if (!workflowId) {
+    throw new Error("inspect(action='apply_instruction') requires workflowId.");
   }
 
+  const workflow = await readWorkflow(state.store, workflowId);
+  if (!workflow || !workflow.payload) {
+    throw new Error("There is no completed inspect selection for this workflow. Run begin_capture/await_selection first.");
+  }
+  if (!workflow.selectedElement && !workflow.payload?.selectedElement) {
+    throw new Error("The inspect workflow does not have a selected element yet.");
+  }
   if (typeof args.instruction !== "string" || !args.instruction.trim()) {
     return {
       phase: "awaiting_user_instruction",
-      workflowId: state.inspectWorkflow.workflowId,
-      selectedElement: state.inspectWorkflow.payload.selectedElement,
-      position: state.inspectWorkflow.payload.position,
-      page: state.inspectWorkflow.payload.page,
-      message:
-        "尚未收到修改指令。请直接给出你要改的 DOM 内容，例如“把文本改为…”或“按钮改成红色”。",
+      workflowId,
+      selectedElement: workflow.payload.selectedElement,
+      position: workflow.payload.position,
+      page: workflow.payload.page,
+      message: "No DOM instruction was provided yet. Describe the change you want to make.",
     };
   }
 
-  state.inspectWorkflow.status = "ready_to_apply";
-  state.inspectWorkflow.instruction = args.instruction.trim();
+  const updated = await persistWorkflowState(state.store, state, workflowId, {
+    status: "ready_to_apply",
+    phase: "ready_to_apply",
+    payload: workflow.payload,
+    selectedElement: workflow.payload.selectedElement,
+    position: workflow.payload.position,
+    page: workflow.payload.page,
+    summary: workflow.summary || inspectSummary(workflow.payload),
+    selectionSource: workflow.selectionSource || workflow.payload.selectionSource || null,
+    userInstruction: args.instruction.trim(),
+  });
+  await persistSessionState(state.store, state, { status: "bridge_ready" });
+  for (const sessionState of state.targetsById.values()) {
+    await clearPageSelectionCapture(cdp, sessionState);
+  }
+  logSignal("instruction_recorded", { workflowId, sequence: updated.sequence });
 
   return {
     phase: "ready_to_apply",
-    workflowId: state.inspectWorkflow.workflowId,
-    selectedElement: state.inspectWorkflow.payload.selectedElement,
-    position: state.inspectWorkflow.payload.position,
-    page: state.inspectWorkflow.payload.page,
-    userInstruction: state.inspectWorkflow.instruction,
+    workflowId,
+    selectedElement: updated.payload.selectedElement,
+    position: updated.payload.position,
+    page: updated.payload.page,
+    userInstruction: updated.userInstruction,
+    selectionSource: updated.selectionSource || updated.payload.selectionSource || null,
     nextStep: {
       action: "apply",
-      note: "将 instruction 与 selectedElement/position/page 一起传给后续 DOM 修改工具。",
+      note: "Pass selectedElement, position, page, and userInstruction to the DOM mutation tool.",
       toolingHint: {
         messageId,
         requires: ["execute_javascript", "DOM"],
       },
     },
   };
+}
+
+async function recordSelectionForWorkflow(cdp, state, selection) {
+  const payload = await materializeSelectionPayload(cdp, state, selection);
+  const workflowId = state.activeWorkflowId;
+
+  const currentSelection = await persistCurrentSelection(state.store, state, {
+    workflowId: workflowId || null,
+    status: "selection_received",
+    targetId: selection.targetId || null,
+    page: payload.page,
+    selectedElement: payload.selectedElement,
+    position: payload.position,
+    payload,
+    selectionSource: payload.selectionSource || "overlay_event",
+  });
+
+  if (workflowId) {
+    const workflow = await persistWorkflowState(state.store, state, workflowId, {
+      status: "selection_received",
+      phase: "selection_received",
+      targetId: selection.targetId || null,
+      page: payload.page,
+      selectedElement: payload.selectedElement,
+      position: payload.position,
+      payload,
+      summary: inspectSummary(payload),
+      selectionSource: payload.selectionSource || "overlay_event",
+      error: null,
+    });
+    logSignal("selection_recorded", {
+      workflowId,
+      sequence: workflow.sequence,
+      targetId: selection.targetId || null,
+    });
+  } else {
+    logSignal("selection_recorded_without_workflow", {
+      sequence: currentSelection.sequence,
+      targetId: selection.targetId || null,
+    });
+  }
+
+  await persistSessionState(state.store, state, {
+    status: workflowId ? "selection_received" : "bridge_ready",
+  });
+
+  notifySelectionWaiters(state, selection);
+  return payload;
+}
+
+function queueSelectionRecord(cdp, state, selection) {
+  state.selectionRecorder = state.selectionRecorder
+    .then(() => recordSelectionForWorkflow(cdp, state, selection))
+    .catch(async (err) => {
+      state.lastObservedError = err?.message || String(err);
+      logSignal("selection_record_error", { error: state.lastObservedError });
+      if (state.activeWorkflowId) {
+        await persistWorkflowState(state.store, state, state.activeWorkflowId, {
+          status: "error",
+          phase: "error",
+          error: state.lastObservedError,
+        });
+      }
+      await persistSessionState(state.store, state, {
+        status: "error",
+        error: state.lastObservedError,
+      });
+      return null;
+    });
+  return state.selectionRecorder;
 }
 
 async function attachPageTarget(cdp, targetInfo, state) {
@@ -754,20 +1660,23 @@ async function attachPageTarget(cdp, targetInfo, state) {
   const effectiveSessionId = useDirectSession ? null : sessionId;
   const safeResults = await Promise.all([
     safeSend(sessionCdp, "DOM.enable", {}, effectiveSessionId),
+    safeSend(sessionCdp, "DOM.getDocument", {}, effectiveSessionId),
     safeSend(sessionCdp, "Page.enable", {}, effectiveSessionId),
     safeSend(sessionCdp, "Overlay.enable", {}, effectiveSessionId),
     safeSend(sessionCdp, "Runtime.enable", {}, effectiveSessionId),
   ]);
-  const overlayEnabled = safeResults[2].ok;
+  const overlayEnabled = safeResults[3].ok;
   if (!overlayEnabled) {
-    state.lastObservedError = `Overlay.enable unavailable for target ${targetInfo.targetId}: ${safeResults[2].error?.message || safeResults[2].error}`;
+    state.lastObservedError = `Overlay.enable unavailable for target ${targetInfo.targetId}: ${safeResults[3].error?.message || safeResults[3].error}`;
   }
 
   let frameId = null;
   try {
     const frameTree = await sessionCdp.send("Page.getFrameTree", {}, effectiveSessionId);
     frameId = frameTree?.frameTree?.frame?.id || null;
-  } catch (_err) {}
+  } catch {
+    // Ignore frame tree failures.
+  }
 
   const sessionKey = effectiveSessionId || `direct:${targetInfo.targetId}`;
   state.targetsById.set(targetInfo.targetId, {
@@ -777,29 +1686,40 @@ async function attachPageTarget(cdp, targetInfo, state) {
     frameId,
   });
   state.targetsBySessionId.set(sessionKey, targetInfo.targetId);
+  logSignal("target_attached", { targetId: targetInfo.targetId, direct: useDirectSession });
 
   if (overlayEnabled) {
     const sessionState = state.targetsById.get(targetInfo.targetId);
-    sessionCdp.onEvent((msg) => {
+    sessionCdp.onEvent((message) => {
       if (useDirectSession) {
-        if (msg.method !== "Overlay.inspectNodeRequested") {
+        if (message.method !== "Overlay.inspectNodeRequested") {
           return;
         }
-      } else if (msg.sessionId !== sessionId) {
+      } else if (message.sessionId !== sessionId) {
         return;
       }
 
-      if (msg.method !== "Overlay.inspectNodeRequested") {
+      if (message.method !== "Overlay.inspectNodeRequested") {
         return;
       }
       state.lastSelectionEvent = {
-        ...msg.params,
+        ...message.params,
         targetId: targetInfo.targetId,
         sessionId: sessionState.sessionId,
         eventTime: Date.now(),
       };
-      notifySelectionWaiters(state, state.lastSelectionEvent);
+      void queueSelectionRecord(cdp, state, state.lastSelectionEvent);
     });
+  }
+
+  if (state.activeWorkflowId) {
+    try {
+      await installPageSelectionCapture(cdp, state, state.targetsById.get(targetInfo.targetId), state.activeWorkflowId);
+      logSignal("page_capture_armed", { workflowId: state.activeWorkflowId, targetId: targetInfo.targetId });
+    } catch (err) {
+      state.lastObservedError = `page capture arm failed for ${targetInfo.targetId}: ${err?.message || err}`;
+      logSignal("page_capture_arm_error", { workflowId: state.activeWorkflowId, targetId: targetInfo.targetId, error: state.lastObservedError });
+    }
   }
 }
 
@@ -860,7 +1780,27 @@ function updateTargetInfo(state, info) {
   });
 }
 
-async function start() {
+async function markActiveWorkflowDisconnected(state, message) {
+  if (!state.activeWorkflowId) {
+    await persistSessionState(state.store, state, {
+      status: "browser_disconnected",
+      error: message,
+    });
+    return;
+  }
+  await persistWorkflowState(state.store, state, state.activeWorkflowId, {
+    status: "browser_disconnected",
+    phase: "browser_disconnected",
+    error: message,
+  });
+  await persistSessionState(state.store, state, {
+    status: "browser_disconnected",
+    error: message,
+  });
+  logSignal("browser_disconnected", { workflowId: state.activeWorkflowId, message });
+}
+
+export async function start() {
   const args = parseFlags(process.argv.slice(2));
   const debugUrl = args["browser-url"] || "http://127.0.0.1:9223";
   const upstreamBin = args["upstream-bin"] || "";
@@ -871,6 +1811,7 @@ async function start() {
     throw new Error(`No webSocketDebuggerUrl from ${debugUrl}/json/version`);
   }
 
+  const browserUrl = new URL(debugUrl);
   const cdp = createCDPSession(wsUrl);
   await cdp.waitOpen();
 
@@ -882,72 +1823,90 @@ async function start() {
     lastSelectionEvent: null,
     lastObservedError: null,
     targetDomainAvailable: false,
-    inspectWorkflow: null,
+    activeWorkflowId: null,
+    selectionRecorder: Promise.resolve(),
+    store: createInspectStore({
+      debugHost: browserUrl.hostname,
+      debugPort: browserUrl.port || "80",
+    }),
+    storeSequence: 0,
   };
+
+  await initializeStoreState(state.store, state);
 
   let targetInfos = await loadTargetsFromTargetDomain(cdp, state);
   if (!targetInfos.length) {
     targetInfos = await loadTargetsFromDebugList(debugUrl, state);
   }
   if (!targetInfos.length) {
-    throw new Error("未发现可用的页面目标，请先在 Chrome 打开页面后重试。");
+    throw new Error("No page target is available. Open a page in Chrome first and retry.");
   }
-  for (const info of targetInfos || []) {
-    if (info.type === "page") {
-      updateTargetInfo(state, info);
-      try {
-        await attachPageTarget(cdp, info, state);
-      } catch (err) {
-        state.lastObservedError = `attach page failed: ${err?.message || err}`;
-      }
+
+  for (const info of targetInfos) {
+    if (info.type !== "page") {
+      continue;
+    }
+    updateTargetInfo(state, info);
+    try {
+      await attachPageTarget(cdp, info, state);
+    } catch (err) {
+      state.lastObservedError = `attach page failed: ${err?.message || err}`;
     }
   }
+
   if (!state.targetsById.size) {
     throw new Error(`Failed to attach any page target for inspection. Last error: ${state.lastObservedError || "unknown"}`);
   }
 
-  cdp.onEvent((msg) => {
-    if (!state.targetDomainAvailable) {
+  await persistSessionState(state.store, state, { status: "bridge_ready" });
+  logSignal("bridge_ready", { targets: state.targetsById.size, store: state.store.inspectDir });
+
+  cdp.onEvent((message) => {
+    if (!state.targetDomainAvailable || !message?.method) {
       return;
     }
-    if (!msg?.method) {
-      return;
-    }
-    if (msg.method === "Target.targetCreated" && msg.params?.targetInfo?.type === "page") {
-      const info = msg.params.targetInfo;
+
+    if (message.method === "Target.targetCreated" && message.params?.targetInfo?.type === "page") {
+      const info = message.params.targetInfo;
       updateTargetInfo(state, info);
       attachPageTarget(cdp, info, state).catch((err) => {
         state.lastObservedError = `attach page failed: ${err?.message || err}`;
       });
       return;
     }
-    if (msg.method === "Target.targetDestroyed" && msg.params?.targetId) {
-      const targetId = msg.params.targetId;
+
+    if (message.method === "Target.targetDestroyed" && message.params?.targetId) {
+      const targetId = message.params.targetId;
       const session = state.targetsById.get(targetId);
       if (session?.sessionId) {
         state.targetsBySessionId.delete(session.sessionId);
       }
       state.targetsById.delete(targetId);
       state.targetInfosByTargetId.delete(targetId);
+      logSignal("target_detached", { targetId });
+      if (!state.targetsById.size) {
+        void markActiveWorkflowDisconnected(state, "All page targets were detached.");
+      }
       return;
     }
-    if (msg.method === "Target.targetInfoChanged" && msg.params?.targetInfo) {
-      updateTargetInfo(state, msg.params.targetInfo);
+
+    if (message.method === "Target.targetInfoChanged" && message.params?.targetInfo) {
+      updateTargetInfo(state, message.params.targetInfo);
       return;
     }
-    if (msg.sessionId && msg.method === "Overlay.inspectNodeRequested") {
-      const targetId = state.targetsBySessionId.get(msg.sessionId);
+
+    if (message.sessionId && message.method === "Overlay.inspectNodeRequested") {
+      const targetId = state.targetsBySessionId.get(message.sessionId);
       if (!targetId) {
         return;
       }
       state.lastSelectionEvent = {
-        ...msg.params,
+        ...message.params,
         targetId,
-        sessionId: msg.sessionId,
+        sessionId: message.sessionId,
         eventTime: Date.now(),
       };
-      notifySelectionWaiters(state, state.lastSelectionEvent);
-      return;
+      void queueSelectionRecord(cdp, state, state.lastSelectionEvent);
     }
   });
 
@@ -969,7 +1928,8 @@ async function start() {
   child.stderr.on("data", (chunk) => {
     process.stderr.write(`[upstream] ${chunk}`);
   });
-  child.on("exit", (code) => {
+  child.on("exit", async (code) => {
+    await markActiveWorkflowDisconnected(state, "The upstream MCP bridge exited.");
     process.exit(code || 0);
   });
 
@@ -991,34 +1951,25 @@ async function start() {
       return;
     }
 
-    if (
-      message.method === "tools/call" &&
-      message.params?.name === "inspect_selected_element"
-    ) {
+    if (message.method === "tools/call" && message.params?.name === "inspect_selected_element") {
       const args = message.params?.arguments || {};
       const waitForSelectionMs = clampInt(args.waitForSelectionMs, DEFAULT_MIN_WAIT_MS, 60000, DEFAULT_WAIT_MS);
       const timeoutMs = clampInt(args.timeoutMs, 0, 60000, DEFAULT_TIMEOUT_MS);
 
-      if (!state.lastSelectionEvent && !state.lastObservedError) {
-        state.lastObservedError = "尚未接收到元素选择事件。请先在 DevTools 中选择元素后重试。";
-      }
-
       try {
-        const payload = await resolveSelectionOnDemand(cdp, state, {
-          waitForSelectionMs,
-          timeoutMs,
-        });
+        let payload = null;
+        const currentSelection = await readJsonIfPresent(state.store.currentSelectionPath);
+        if (currentSelection?.payload?.selectedElement) {
+          payload = currentSelection.payload;
+        } else {
+          payload = await resolveLatestSelection(state, cdp, waitForSelectionMs, timeoutMs);
+        }
         process.stdout.write(
           encodeMessage({
             jsonrpc: "2.0",
             id: message.id,
             result: {
-              content: [
-                {
-                  type: "text",
-                  text: JSON.stringify(payload, null, 2),
-                },
-              ],
+              content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
               structuredContent: payload,
             },
           }),
@@ -1030,8 +1981,7 @@ async function start() {
             id: message.id,
             error: {
               code: -32001,
-              message:
-                err?.message || "failed to inspect selected element",
+              message: err?.message || "failed to inspect selected element",
             },
           }),
         );
@@ -1041,20 +1991,14 @@ async function start() {
 
     if (message.method === "tools/call" && message.params?.name === "inspect") {
       const args = message.params?.arguments || {};
-
       try {
-        const payload = await runInspectFlow(cdp, state, args, message.id);
+        const payload = await handleInspectAction(cdp, state, args, message.id);
         process.stdout.write(
           encodeMessage({
             jsonrpc: "2.0",
             id: message.id,
             result: {
-              content: [
-                {
-                  type: "text",
-                  text: JSON.stringify(payload, null, 2),
-                },
-              ],
+              content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
               structuredContent: payload,
             },
           }),
@@ -1066,8 +2010,7 @@ async function start() {
             id: message.id,
             error: {
               code: -32001,
-              message:
-                err?.message || "failed to run inspect workflow",
+              message: err?.message || "failed to run inspect workflow",
             },
           }),
         );
@@ -1091,7 +2034,8 @@ async function start() {
   process.stdin.on("data", fromClient);
   child.stdout.on("data", fromUpstream);
 
-  process.on("SIGINT", () => {
+  process.on("SIGINT", async () => {
+    await markActiveWorkflowDisconnected(state, "The inspect bridge received SIGINT.");
     cdp.close();
     for (const sessionState of state.targetsById.values()) {
       if (sessionState?.cdp && sessionState.cdp !== cdp) {
@@ -1103,7 +2047,10 @@ async function start() {
   });
 }
 
-start().catch((err) => {
-  process.stderr.write(`${err?.message || err}\n`);
-  process.exit(1);
-});
+const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+if (isMain) {
+  start().catch((err) => {
+    process.stderr.write(`${err?.message || err}\n`);
+    process.exit(1);
+  });
+}

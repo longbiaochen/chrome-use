@@ -109,6 +109,15 @@ if [[ "$last_arg" == *"/json/new?"* ]]; then
   exit 0
 fi
 
+if [[ "$last_arg" == *"/json/list" ]]; then
+  if [[ -n "${MOCK_JSON_LIST_FILE:-}" && -f "${MOCK_JSON_LIST_FILE}" ]]; then
+    cat "${MOCK_JSON_LIST_FILE}"
+  else
+    printf '[]\n'
+  fi
+  exit 0
+fi
+
 exit 1
 EOF
 chmod +x "$MOCK_BIN/curl"
@@ -174,11 +183,13 @@ setup_case() {
   export MOCK_ENDPOINT_READY_AFTER="1"
   export MOCK_OPEN_PS_CONTENT=""
   export MOCK_WINDOW_COUNT_AFTER_OPEN="1"
+  export MOCK_JSON_LIST_FILE="$CASE_DIR/json-list.json"
   unset MOCK_OSASCRIPT_FAIL
 
   : >"$MOCK_PS_FILE"
   printf '1' >"$MOCK_WINDOW_COUNT_FILE"
   printf '0' >"$MOCK_VERSION_COUNT_FILE"
+  printf '[]\n' >"$MOCK_JSON_LIST_FILE"
 }
 
 run_ensure() {
@@ -314,6 +325,46 @@ test_doctor_reports_window_blocker() {
   assert_contains "must have exactly one window" "$DOCTOR_STDOUT" "doctor multiple window case reports blocker"
 }
 
+test_allows_page_target_fallback_when_window_probe_reports_zero() {
+  setup_case
+  printf '909 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=%s --remote-debugging-port=9223\n' "$CHROME_USE_PROFILE_DIR" >"$MOCK_PS_FILE"
+  printf '0' >"$MOCK_WINDOW_COUNT_FILE"
+  printf '[{"id":"page-1","type":"page","url":"http://127.0.0.1:8000/"}]\n' >"$MOCK_JSON_LIST_FILE"
+
+  run_ensure "https://example.com/fallback"
+
+  assert_eq "0" "$ENSURE_STATUS" "page-target fallback case exits successfully"
+  assert_file_lines "$MOCK_NEW_TAB_LOG" "1" "page-target fallback case still opens one new tab"
+
+  run_doctor
+
+  assert_eq "0" "$DOCTOR_STATUS" "doctor page-target fallback case exits successfully"
+  assert_contains "Window count: 0" "$DOCTOR_STDOUT" "doctor page-target fallback case reports zero windows"
+  assert_contains "Page target count: 1" "$DOCTOR_STDOUT" "doctor page-target fallback case reports one page target"
+  assert_contains "page-target fallback" "$DOCTOR_STDOUT" "doctor page-target fallback case reports fallback readiness"
+}
+
+test_ignores_renderer_helpers_for_process_ownership() {
+  setup_case
+  cat >"$MOCK_PS_FILE" <<EOF
+707 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=$CHROME_USE_PROFILE_DIR --remote-debugging-port=9223
+708 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/146.0.7680.165/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --user-data-dir=$CHROME_USE_PROFILE_DIR --remote-debugging-port=9223
+709 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/146.0.7680.165/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper --type=gpu-process --user-data-dir=$CHROME_USE_PROFILE_DIR
+EOF
+
+  run_ensure "https://example.com/helper-test"
+
+  assert_eq "0" "$ENSURE_STATUS" "helper process case exits successfully"
+  assert_file_lines "$MOCK_NEW_TAB_LOG" "1" "helper process case still opens one new tab"
+
+  run_doctor
+
+  assert_eq "0" "$DOCTOR_STATUS" "doctor helper process case exits successfully"
+  assert_contains "Dedicated PID count: 1" "$DOCTOR_STDOUT" "doctor helper process case reports one owner pid"
+  assert_contains "Matching PID count: 1" "$DOCTOR_STDOUT" "doctor helper process case reports one matching pid"
+  assert_contains "Profile owner PID(s): 707" "$DOCTOR_STDOUT" "doctor helper process case reports browser root pid"
+}
+
 main() {
   test_launches_dedicated_instance
   test_reuses_running_instance_with_new_tab
@@ -324,6 +375,8 @@ main() {
   test_allows_other_profiles
   test_doctor_reports_ready_state
   test_doctor_reports_window_blocker
+  test_allows_page_target_fallback_when_window_probe_reports_zero
+  test_ignores_renderer_helpers_for_process_ownership
 
   if [[ "$failures" -gt 0 ]]; then
     echo "Runtime tests failed with $failures issue(s)." >&2
