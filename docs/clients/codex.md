@@ -66,7 +66,10 @@ Recommended verification for explicit commands:
 6. In Chrome, click the target element only after inspect mode is armed.
 7. The client calls `inspect(action="await_selection", workflowId="<workflowId>")`.
 8. Confirm the agent does not conclude the turn before the tool returns `phase=awaiting_user_instruction`.
-9. Confirm returned `summary` and `workflowId` after `phase=awaiting_user_instruction`.
+9. Confirm the agent reports enough selected-element detail after `phase=awaiting_user_instruction`:
+   `summary`, `workflowId`, tag / `selectedElement.nodeName`, `selectedElement.selectorHint`,
+   `selectedElement.id`, `selectedElement.className`, `selectedElement.ariaLabel`, page URL,
+   `position`, and the element content from `selectedElement.snippet` or equivalent captured text.
 10. Reply with a concrete edit instruction.
 11. Confirm returned `phase=ready_to_apply`.
 12. If the inspect bridge is attached but durable state still shows `activeWorkflowId: null`, recover by creating a fresh workflow and restarting the inspect bridge.

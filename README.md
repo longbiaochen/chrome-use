@@ -165,7 +165,9 @@ For `/chrome-inspect` default flow, send:
 5. Confirm inspect mode is armed, then select the target element in Chrome inspector flow.
 6. Call `inspect(action="await_selection", workflowId="<workflowId>")`.
 7. Wait for `phase=awaiting_user_instruction`; the agent should not finish the turn before that selection payload is returned.
-8. Confirm returned `summary` and `selectedElement`.
+8. Confirm the agent reports enough selected-element detail to avoid another lookup:
+   `summary`, tag / `nodeName`, `selectorHint`, `id`, `className`, `ariaLabel`, page URL,
+   `position`, and the element content from `selectedElement.snippet` or equivalent captured text.
 9. Reply with a concrete edit instruction.
 10. Confirm returned `phase=ready_to_apply`.
 11. If the inspect bridge is attached but durable session state still shows `activeWorkflowId: null`, recover by creating a fresh workflow and restarting the inspect bridge.

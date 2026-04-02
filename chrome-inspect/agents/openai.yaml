@@ -22,11 +22,15 @@ interface:
        `inspect(action="await_selection", workflowId="<workflowId>")`.
        Do not return a final response, partial completion summary, or timeout-style "Worked for ..."
        message before the tool returns an element selection result.
-    6. If the return is `phase=awaiting_user_instruction`, output the selected-element
-       `summary` and ask exactly one operator question: `How should I edit it?`.
-    7. After the user provides instruction text, call
+    6. If the return is `phase=awaiting_user_instruction`, output enough selected-element detail for the operator to identify the node immediately.
+       Include at least: `summary`, `selectedElement.nodeName`, `selectedElement.selectorHint`,
+       `selectedElement.id`, `selectedElement.className`, `selectedElement.ariaLabel`,
+       page `url`, `position`, and the element content from `selectedElement.snippet`
+       or equivalent captured text.
+    7. Then ask exactly one operator question: `How should I edit it?`.
+    8. After the user provides instruction text, call
        `inspect(action="apply_instruction", workflowId="<workflowId>", instruction="<user instruction>")`.
-    8. Return the `ready_to_apply` payload and keep `selectedElement`, `position`, and `page` as mutation context.
+    9. Return the `ready_to_apply` payload and keep `selectedElement`, `position`, and `page` as mutation context.
        If the inspect bridge is attached but durable state still shows `activeWorkflowId: null`,
        recover by creating a fresh workflow and restarting the inspect bridge.
   allow_implicit_invocation: false

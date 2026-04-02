@@ -22,8 +22,19 @@ Use this skill when an agent needs deterministic, inspect-first Chrome DOM work 
 6. If the current client cannot drive the inspect MCP handshake reliably, create the durable workflow first, then restart or attach the inspect bridge so it rehydrates `activeWorkflowId` from persisted state and arms inspect mode on the open page targets.
 7. Confirm inspect mode is armed, then have the user select an element in Chrome and call `inspect(action="await_selection", workflowId="<workflowId>")`.
 8. Do not return a final response, a completion summary, or a "Worked for ..." timeout-style message before receiving `phase=awaiting_user_instruction` with the selected-element payload.
-9. If `phase=awaiting_user_instruction`, print concise selected-element summary and ask one concrete DOM instruction.
-10. Re-run the same workflow with `inspect(action="apply_instruction", workflowId="<workflowId>", instruction="<user text>")`.
+9. If `phase=awaiting_user_instruction`, report the selected element with enough detail for the operator to identify and modify it without another lookup.
+   Include at least:
+   - `summary`
+   - the element tag / `nodeName`
+   - `selectorHint`
+   - `id`
+   - `className`
+   - `ariaLabel`
+   - page `url`
+   - `position`
+   - the element content from `selectedElement.snippet` or equivalent captured text
+10. After reporting that richer element context, ask one concrete DOM instruction.
+11. Re-run the same workflow with `inspect(action="apply_instruction", workflowId="<workflowId>", instruction="<user text>")`.
 
 ## Tools
 
