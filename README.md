@@ -74,18 +74,25 @@ Available inspect tools:
     - `page` with `title`, `url`, `pageId`, `frameId`
 - `inspect`
   - Parameters:
-    - `action` (`capture` | `apply_instruction`, default `capture`)
+    - `action` (`begin_capture` | `await_selection` | `get_status` | `capture` | `apply_instruction`, default `capture`)
+    - `workflowId` (required for `await_selection`, `get_status`, and recommended for `apply_instruction`)
     - `instruction` (required when `apply_instruction`)
     - `waitForSelectionMs` (default `5000`, minimum `500`)
     - `timeoutMs` (`0` means block until selection, default `0`)
   - Output fields:
-    - `phase` (`awaiting_user_instruction`, `ready_to_apply`)
+    - `phase` (`waiting_for_selection`, `awaiting_user_instruction`, `ready_to_apply`)
     - `workflowId`
     - `selectedElement`
     - `position`
     - `page`
     - `summary`
     - `userInstruction`
+  - Recommended stable flow:
+    - `inspect(action="begin_capture")`
+    - user selects element in Chrome
+    - `inspect(action="await_selection", workflowId="<workflowId>")`
+    - `inspect(action="apply_instruction", workflowId="<workflowId>", instruction="...")`
+  - `inspect(action="capture")` remains available as a compatibility shortcut.
 
 ## Client support
 
@@ -152,11 +159,13 @@ For `/chrome-inspect` default flow, send:
 1. Run `/chrome-inspect` in chat.
 2. Let the wrapper open Chrome and auto-start the local project web app first when `CHROME_INSPECT_PROJECT_ROOT` is configured.
    If the dedicated profile is already running, the wrapper reuses it by opening a new tab there instead of creating another dedicated window.
-3. Select the target element in Chrome inspector flow.
-4. Wait for `phase=awaiting_user_instruction`; the agent should not finish the turn before that selection payload is returned.
-5. Confirm returned `summary` and `selectedElement`.
-6. Reply with a concrete edit instruction.
-7. Confirm returned `phase=ready_to_apply`.
+3. Call `inspect(action="begin_capture")` and store the returned `workflowId`.
+4. Select the target element in Chrome inspector flow.
+5. Call `inspect(action="await_selection", workflowId="<workflowId>")`.
+6. Wait for `phase=awaiting_user_instruction`; the agent should not finish the turn before that selection payload is returned.
+7. Confirm returned `summary` and `selectedElement`.
+8. Reply with a concrete edit instruction.
+9. Confirm returned `phase=ready_to_apply`.
 
 For `/chrome-auth`, send the command with target URL when known, then follow interactive auth steps in the same dedicated profile session.
 

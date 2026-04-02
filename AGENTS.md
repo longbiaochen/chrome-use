@@ -12,11 +12,17 @@
   - `~/.codex/skills/chrome-auth`
   - `~/.codex/skills/chrome-inspect`
 - `chrome-use` is a shared, non-command helper package.
+- Only two slash commands are surfaced: `/chrome-inspect` and `/chrome-auth`.
+- `/chrome` and `/inspect` are intentionally unavailable as standalone commands.
 - Public defaults for this repo should remain neutral:
   - profile dir: `~/.chrome-use/agent-profile`
   - state dir: `~/.chrome-use/state`
   - debug endpoint: `http://127.0.0.1:9223`
+- Keep the dedicated profile runtime contract strict: one profile-owner process on `127.0.0.1:9223`, and one dedicated profile window on macOS.
+- For `/chrome-inspect`, resolve startup URL in this order: explicit user URL → `CHROME_INSPECT_PROJECT_ROOT` docs webapp entry → `CHROME_USE_DEFAULT_WEBAPP_URL` → `about:blank`.
+- If `CHROME_INSPECT_AUTO_START_WEBAPP=1` and `CHROME_INSPECT_PROJECT_ROOT` are set, `chrome-use/scripts/open_url.sh` should auto-start the local project web app before attaching Chrome.
 - On macOS, open or reuse the dedicated Chrome profile in the background so MCP startup does not steal user focus.
+- Use repository checks when touching runtime/packaging behavior: `bash scripts/verify-manifest.sh` and `bash scripts/test-runtime.sh`.
 - Do not claim Windows support unless it has been tested end-to-end.
 - When updating launch messaging, optimize for shareability:
   - lead with the pain point
