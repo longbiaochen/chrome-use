@@ -144,6 +144,7 @@ export CHROME_USE_DEBUG_PORT="9223"
 `CHROME_USE_DEFAULT_WEBAPP_URL` is used as optional URL fallback before `about:blank`.
 For `/chrome-inspect`, set `CHROME_INSPECT_PROJECT_ROOT` (for example `/Users/longbiao/Projects/home-page`) to let the helper auto-resolve the project's docs web app entry.
 When `CHROME_INSPECT_AUTO_START_WEBAPP=1` is set, `open_url.sh` will also try to start that local web app before attaching Chrome.
+That autostart path only applies when the resolved target is a matching local `localhost` or `127.0.0.1` URL for the detected project entry.
 
 For a Codex setup that already standardizes on `~/.codex/chrome-mcp-profile`:
 
@@ -160,12 +161,14 @@ For `/chrome-inspect` default flow, send:
 2. Let the wrapper open Chrome and auto-start the local project web app first when `CHROME_INSPECT_PROJECT_ROOT` is configured.
    If the dedicated profile is already running, the wrapper reuses it by opening a new tab there instead of creating another dedicated window.
 3. Call `inspect(action="begin_capture")` and store the returned `workflowId`.
-4. Select the target element in Chrome inspector flow.
-5. Call `inspect(action="await_selection", workflowId="<workflowId>")`.
-6. Wait for `phase=awaiting_user_instruction`; the agent should not finish the turn before that selection payload is returned.
-7. Confirm returned `summary` and `selectedElement`.
-8. Reply with a concrete edit instruction.
-9. Confirm returned `phase=ready_to_apply`.
+4. If the client cannot drive the inspect MCP handshake reliably, create the durable workflow first, then restart or attach the inspect bridge so it rehydrates `activeWorkflowId` from persisted state and arms inspect mode on the open page.
+5. Confirm inspect mode is armed, then select the target element in Chrome inspector flow.
+6. Call `inspect(action="await_selection", workflowId="<workflowId>")`.
+7. Wait for `phase=awaiting_user_instruction`; the agent should not finish the turn before that selection payload is returned.
+8. Confirm returned `summary` and `selectedElement`.
+9. Reply with a concrete edit instruction.
+10. Confirm returned `phase=ready_to_apply`.
+11. If the inspect bridge is attached but durable session state still shows `activeWorkflowId: null`, recover by creating a fresh workflow and restarting the inspect bridge.
 
 For `/chrome-auth`, send the command with target URL when known, then follow interactive auth steps in the same dedicated profile session.
 

@@ -62,12 +62,14 @@ Recommended verification for explicit commands:
 3. Chrome session is opened through `scripts/open_url.sh` with resolved startup URL, and the local project web app is auto-started first when `CHROME_INSPECT_PROJECT_ROOT` is configured.
    Reuse keeps the dedicated `agent-profile` on a single Chrome window and opens a new tab on that running instance.
 4. The client calls `inspect(action="begin_capture")` and stores `workflowId`.
-5. In Chrome, click the target element.
-6. The client calls `inspect(action="await_selection", workflowId="<workflowId>")`.
-7. Confirm the agent does not conclude the turn before the tool returns `phase=awaiting_user_instruction`.
-8. Confirm returned `summary` and `workflowId` after `phase=awaiting_user_instruction`.
-9. Reply with a concrete edit instruction.
-10. Confirm returned `phase=ready_to_apply`.
+5. If the client cannot drive the inspect MCP handshake reliably, it recreates or pre-creates the durable workflow, then restarts or attaches the inspect bridge so it rehydrates `activeWorkflowId` and arms inspect mode.
+6. In Chrome, click the target element only after inspect mode is armed.
+7. The client calls `inspect(action="await_selection", workflowId="<workflowId>")`.
+8. Confirm the agent does not conclude the turn before the tool returns `phase=awaiting_user_instruction`.
+9. Confirm returned `summary` and `workflowId` after `phase=awaiting_user_instruction`.
+10. Reply with a concrete edit instruction.
+11. Confirm returned `phase=ready_to_apply`.
+12. If the inspect bridge is attached but durable state still shows `activeWorkflowId: null`, recover by creating a fresh workflow and restarting the inspect bridge.
 
 For `/chrome-auth`, send the explicit auth URL and then step through login/authorization actions while keeping the same dedicated profile, debug endpoint, and single dedicated Chrome window.
 
