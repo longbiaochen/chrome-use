@@ -59,22 +59,23 @@ Recommended verification for explicit commands:
 1. Reinstall/update skills:
    `bash install/install-codex-skill.sh`
 2. Send `/chrome-inspect` in chat.
-3. Chrome session is opened through `scripts/open_url.sh` with resolved startup URL, and the local project web app is auto-started first when `CHROME_INSPECT_PROJECT_ROOT` is configured.
+3. Chrome session is opened through the canonical inspect wrapper with the resolved startup URL, and the local project web app is auto-started first when `CHROME_INSPECT_PROJECT_ROOT` is configured.
    Reuse keeps the dedicated `agent-profile` on a single Chrome window and opens a new tab on that running instance.
-4. The client calls `inspect(action="begin_capture")` and stores `workflowId`.
-5. If the client cannot drive the inspect MCP handshake reliably, it recreates or pre-creates the durable workflow, then restarts or attaches the inspect bridge so it rehydrates `activeWorkflowId` and arms inspect mode.
-6. In Chrome, click the target element only after inspect mode is armed.
-7. The client calls `inspect(action="await_selection", workflowId="<workflowId>")`.
-8. Treat the result as valid only if it belongs to the current `workflowId` and follows a fresh click for the current capture cycle.
+4. The wrapper should pass the startup URL into the shared runtime so the inspect bridge can prioritize the freshly opened target instead of attaching unrelated tabs.
+5. The client calls `inspect(action="begin_capture")` and stores `workflowId`.
+6. If the client cannot drive the inspect MCP handshake reliably, it recreates or pre-creates the durable workflow, then restarts or attaches the inspect bridge so it rehydrates `activeWorkflowId` and arms inspect mode.
+7. In Chrome, click the target element only after inspect mode is armed.
+8. The client calls `inspect(action="await_selection", workflowId="<workflowId>")`.
+9. Treat the result as valid only if it belongs to the current `workflowId` and follows a fresh click for the current capture cycle.
    If `await_selection` appears to return immediately with stale prior context, restart capture instead of presenting it as the new selection.
-9. Confirm the agent does not conclude the turn before the tool returns `phase=awaiting_user_instruction`.
-10. Confirm the agent reports enough selected-element detail after `phase=awaiting_user_instruction`:
+10. Confirm the agent does not conclude the turn before the tool returns `phase=awaiting_user_instruction`.
+11. Confirm the agent reports enough selected-element detail after `phase=awaiting_user_instruction`:
    `summary`, `workflowId`, tag / `selectedElement.nodeName`, `selectedElement.selectorHint`,
    `selectedElement.id`, `selectedElement.className`, `selectedElement.ariaLabel`, page URL,
    `position`, and the element content from `selectedElement.snippet` or equivalent captured text.
-11. Reply with a concrete edit instruction.
-12. Confirm returned `phase=ready_to_apply`.
-13. If the inspect bridge is attached but durable state still shows `activeWorkflowId: null`, recover by creating a fresh workflow and restarting the inspect bridge.
+12. Reply with a concrete edit instruction.
+13. Confirm returned `phase=ready_to_apply`.
+14. If the inspect bridge is attached but durable state still shows `activeWorkflowId: null`, recover by creating a fresh workflow and restarting the inspect bridge.
 
 For `/chrome-auth`, send the explicit auth URL and then step through login/authorization actions while keeping the same dedicated profile, debug endpoint, and single dedicated Chrome window.
 

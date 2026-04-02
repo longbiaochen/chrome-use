@@ -7,6 +7,8 @@ source "$SCRIPT_DIR/runtime_lib.sh"
 START_URL="${1:-}"
 START_URL="$("$SCRIPT_DIR/resolve_startup_url.sh" "$START_URL")"
 LOG_FILE="${STATE_DIR}/chrome.log"
+INSPECT_SCOPE_DIR="$(inspect_scope_dir)"
+PREFERRED_TARGET_FILE="${INSPECT_SCOPE_DIR}/preferred-target.json"
 
 launch_chrome() {
   local chrome_bin="$1"
@@ -60,11 +62,65 @@ url_encode() {
 open_tab_on_dedicated_instance() {
   local target_url="$1"
   local encoded_url
+  local response
 
   [[ -n "$target_url" ]] || return 0
 
   encoded_url="$(url_encode "$target_url")"
-  curl -fsS -X PUT "${DEBUG_URL}/json/new?${encoded_url}" >/dev/null
+  response="$(curl -fsS -X PUT "${DEBUG_URL}/json/new?${encoded_url}" 2>/dev/null || true)"
+  if [[ -n "$response" ]]; then
+    mkdir -p "$INSPECT_SCOPE_DIR"
+    node - "$response" "$PREFERRED_TARGET_FILE" "$target_url" <<'NODE'
+const [response, filePath, targetUrl] = process.argv.slice(2);
+try {
+  const parsed = JSON.parse(response);
+  const payload = {
+    targetId: parsed.id || null,
+    url: parsed.url || targetUrl || null,
+    recordedAt: new Date().toISOString(),
+  };
+  require("fs").writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`);
+} catch {}
+NODE
+  fi
+}
+
+record_preferred_target_for_url() {
+  local target_url="$1"
+  local payload
+
+  [[ -n "$target_url" ]] || return 0
+
+  payload="$(curl -fsS "${DEBUG_URL}/json/list" 2>/dev/null || true)"
+  [[ -n "$payload" ]] || return 0
+
+  mkdir -p "$INSPECT_SCOPE_DIR"
+  node - "$payload" "$PREFERRED_TARGET_FILE" "$target_url" <<'NODE'
+const [payload, filePath, targetUrl] = process.argv.slice(2);
+const fs = require("fs");
+function normalize(value) {
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    return url.href;
+  } catch {
+    return value || "";
+  }
+}
+try {
+  const items = JSON.parse(payload);
+  const pages = Array.isArray(items) ? items.filter((item) => item && item.type === "page") : [];
+  const normalizedTarget = normalize(targetUrl);
+  const preferred = pages.find((item) => normalize(item.url) === normalizedTarget) || null;
+  if (!preferred) process.exit(0);
+  const record = {
+    targetId: preferred.id || null,
+    url: preferred.url || targetUrl || null,
+    recordedAt: new Date().toISOString(),
+  };
+  fs.writeFileSync(filePath, `${JSON.stringify(record, null, 2)}\n`);
+} catch {}
+NODE
 }
 
 wait_for_dedicated_instance() {
@@ -141,6 +197,7 @@ fi
 
 if ensure_endpoint_owned_by_dedicated_profile >/dev/null; then
   open_tab_on_dedicated_instance "$START_URL"
+  record_preferred_target_for_url "$START_URL"
   echo "$DEBUG_URL"
   exit 0
 fi
@@ -157,6 +214,7 @@ fi
 launch_chrome "$chrome_bin"
 
 if wait_for_dedicated_instance >/dev/null; then
+  record_preferred_target_for_url "$START_URL"
   echo "$DEBUG_URL"
   exit 0
 fi

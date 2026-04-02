@@ -37,6 +37,10 @@ if [[ "$INSPECT_MODE" == "inspect" || "$INSPECT_MODE" == "element-inspect" ]]; t
     DEBUG_URL="$("$SCRIPT_DIR/open_url.sh")"
   fi
 
+  if [[ -n "$STARTUP_URL" ]]; then
+    exec node "$INSPECT_SCRIPT" --browser-url="$DEBUG_URL" --startup-url="$STARTUP_URL"
+  fi
+
   exec node "$INSPECT_SCRIPT" --browser-url="$DEBUG_URL"
 fi
 

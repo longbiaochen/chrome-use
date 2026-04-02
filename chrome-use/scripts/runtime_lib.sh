@@ -8,6 +8,10 @@ DEBUG_PORT="${CHROME_USE_DEBUG_PORT:-9223}"
 DEBUG_HOST="${CHROME_USE_DEBUG_HOST:-127.0.0.1}"
 DEBUG_URL="http://${DEBUG_HOST}:${DEBUG_PORT}"
 
+inspect_scope_dir() {
+  echo "${STATE_DIR}/inspect/${DEBUG_HOST}-${DEBUG_PORT}"
+}
+
 platform() {
   case "$(uname -s)" in
     Darwin) echo "macos" ;;

@@ -9,33 +9,33 @@ interface:
        - `CHROME_USE_DEFAULT_WEBAPP_URL`
        - `about:blank`
     2. Open Chrome in the resolved URL with:
-       `bash scripts/open_url.sh "<resolved_url>"`
+       `bash scripts/chrome_devtools_mcp_wrapper.sh "<resolved_url>"`
        so the dedicated profile/debug endpoint is ready, the dedicated profile remains a single-window instance, and local docs webapp is auto-started when
        `CHROME_INSPECT_PROJECT_ROOT` points to a local project (for example
        `/Users/longbiao/Projects/home-page`).
-    3. Ensure the MCP session is running in inspect mode (`CHROME_USE_MCP_MODE=inspect`).
-       Use `scripts/chrome_devtools_mcp_wrapper.sh` by default from the `chrome-inspect` repo.
-    4. Create a durable capture workflow with `inspect(action="begin_capture")` and store the returned `workflowId`.
+    3. The wrapper should pass the startup URL into the shared runtime so the inspect bridge can prioritize the freshly opened target instead of attaching unrelated tabs.
+    4. Ensure the MCP session is running in inspect mode (`CHROME_USE_MCP_MODE=inspect`).
+    5. Create a durable capture workflow with `inspect(action="begin_capture")` and store the returned `workflowId`.
        If the current client cannot drive the inspect MCP handshake reliably, attach the inspect bridge,
        let it rehydrate `activeWorkflowId` from durable state, and verify freshness from
        `~/.chrome-use/state/inspect/<host-port>/session.json`,
        `events/current-selection.json`, and `workflows/<workflowId>.json`.
-    5. Wait for the operator to select an element in Chrome only after inspect mode is armed, then call
+    6. Wait for the operator to select an element in Chrome only after inspect mode is armed, then call
        `inspect(action="await_selection", workflowId="<workflowId>")`.
        Treat the selection as valid only if it clearly belongs to the current `workflowId` and follows a fresh operator click.
        If `await_selection` appears to return immediately with stale prior context, or the durable files only show older
        `updatedAt` / `payload.observedAt` values, restart capture or create a fresh workflow instead of presenting it as the new selection.
        Do not return a final response, partial completion summary, or timeout-style "Worked for ..."
        message before the tool returns an element selection result.
-    6. If the return is `phase=awaiting_user_instruction`, output enough selected-element detail for the operator to identify the node immediately.
+    7. If the return is `phase=awaiting_user_instruction`, output enough selected-element detail for the operator to identify the node immediately.
        Include at least: `summary`, `selectedElement.nodeName`, `selectedElement.selectorHint`,
        `selectedElement.id`, `selectedElement.className`, `selectedElement.ariaLabel`,
        page `url`, `position`, and the element content from `selectedElement.snippet`
        or equivalent captured text.
-    7. Then ask exactly one operator question: `How should I edit it?`.
-    8. After the user provides instruction text, call
+    8. Then ask exactly one operator question: `How should I edit it?`.
+    9. After the user provides instruction text, call
        `inspect(action="apply_instruction", workflowId="<workflowId>", instruction="<user instruction>")`.
-    9. Return the `ready_to_apply` payload and keep `selectedElement`, `position`, and `page` as mutation context.
+    10. Return the `ready_to_apply` payload and keep `selectedElement`, `position`, and `page` as mutation context.
        If the inspect bridge is attached but durable state still shows `activeWorkflowId: null`,
        recover by creating a fresh workflow and restarting the inspect bridge.
   allow_implicit_invocation: false

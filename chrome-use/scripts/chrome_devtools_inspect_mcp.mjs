@@ -355,10 +355,46 @@ export function createInspectStore({
     eventsDir,
     sessionPath,
     currentSelectionPath,
+    preferredTargetPath: path.join(inspectDir, "preferred-target.json"),
     workflowPath(workflowId) {
       return path.join(workflowsDir, `${workflowId}.json`);
     },
   };
+}
+
+function normalizeComparableUrl(value) {
+  if (!value) {
+    return "";
+  }
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    return url.href;
+  } catch {
+    return String(value);
+  }
+}
+
+export async function selectTargetInfosForStartupUrl(store, targetInfos, startupUrl) {
+  if (!startupUrl || !Array.isArray(targetInfos) || !targetInfos.length) {
+    return targetInfos;
+  }
+
+  const preferred = await readJsonIfPresent(store.preferredTargetPath);
+  const normalizedStartupUrl = normalizeComparableUrl(startupUrl);
+  const exactMatches = targetInfos.filter((info) => normalizeComparableUrl(info?.url) === normalizedStartupUrl);
+  if (!exactMatches.length) {
+    return targetInfos;
+  }
+
+  if (preferred?.targetId) {
+    const preferredMatch = exactMatches.find((info) => info?.targetId === preferred.targetId);
+    if (preferredMatch) {
+      return [preferredMatch];
+    }
+  }
+
+  return [exactMatches[0]];
 }
 
 async function ensureInspectStore(store) {
@@ -626,32 +662,24 @@ async function resolveSelectedElementPayload(
     nodeId = backendNodeId;
   }
 
-  const describe = await activeCdp.send("DOM.describeNode", { nodeId }, sessionId);
-  const node = describe?.node || {};
+  const [describeResult, boxResult, outerResult] = await Promise.all([
+    activeCdp.send("DOM.describeNode", { nodeId }, sessionId),
+    activeCdp.send("DOM.getBoxModel", { nodeId }, sessionId).catch(() => null),
+    activeCdp.send("DOM.getOuterHTML", { nodeId }, sessionId).catch(async () => {
+      try {
+        return await activeCdp.send("DOM.getOuterHTML", { backendNodeId }, sessionId);
+      } catch {
+        return null;
+      }
+    }),
+  ]);
+
+  const node = describeResult?.node || {};
   const nodeName = node.nodeName || "UNKNOWN";
   const id = getAttr(node, "id");
   const className = getAttr(node, "class") || "";
-
-  let model = null;
-  try {
-    const box = await activeCdp.send("DOM.getBoxModel", { nodeId }, sessionId);
-    model = box?.model || null;
-  } catch {
-    // Ignore box model failures.
-  }
-
-  let snippet = "";
-  try {
-    const outer = await activeCdp.send("DOM.getOuterHTML", { nodeId }, sessionId);
-    snippet = safeTruncate(outer?.outerHTML || "", DEFAULT_TRUNCATE);
-  } catch {
-    try {
-      const outer = await activeCdp.send("DOM.getOuterHTML", { backendNodeId }, sessionId);
-      snippet = safeTruncate(outer?.outerHTML || "", DEFAULT_TRUNCATE);
-    } catch {
-      // Ignore outer HTML failures.
-    }
-  }
+  const model = boxResult?.model || null;
+  const snippet = safeTruncate(outerResult?.outerHTML || "", DEFAULT_TRUNCATE);
 
   const hintCandidates = [
     id ? `#${id}` : null,
@@ -1704,14 +1732,13 @@ async function attachPageTarget(cdp, targetInfo, state) {
   const effectiveSessionId = useDirectSession ? null : sessionId;
   const safeResults = await Promise.all([
     safeSend(sessionCdp, "DOM.enable", {}, effectiveSessionId),
-    safeSend(sessionCdp, "DOM.getDocument", {}, effectiveSessionId),
     safeSend(sessionCdp, "Page.enable", {}, effectiveSessionId),
     safeSend(sessionCdp, "Overlay.enable", {}, effectiveSessionId),
     safeSend(sessionCdp, "Runtime.enable", {}, effectiveSessionId),
   ]);
-  const overlayEnabled = safeResults[3].ok;
+  const overlayEnabled = safeResults[2].ok;
   if (!overlayEnabled) {
-    state.lastObservedError = `Overlay.enable unavailable for target ${targetInfo.targetId}: ${safeResults[3].error?.message || safeResults[3].error}`;
+    state.lastObservedError = `Overlay.enable unavailable for target ${targetInfo.targetId}: ${safeResults[2].error?.message || safeResults[2].error}`;
   }
 
   let frameId = null;
@@ -1848,6 +1875,7 @@ export async function start() {
   const args = parseFlags(process.argv.slice(2));
   const debugUrl = args["browser-url"] || "http://127.0.0.1:9223";
   const upstreamBin = args["upstream-bin"] || "";
+  const startupUrl = args["startup-url"] || "";
 
   const version = await fetchJson(`${debugUrl}/json/version`);
   const wsUrl = version.webSocketDebuggerUrl;
@@ -1882,13 +1910,14 @@ export async function start() {
   if (!targetInfos.length) {
     targetInfos = await loadTargetsFromDebugList(debugUrl, state);
   }
+  targetInfos = await selectTargetInfosForStartupUrl(state.store, targetInfos, startupUrl);
   if (!targetInfos.length) {
     throw new Error("No page target is available. Open a page in Chrome first and retry.");
   }
 
-  for (const info of targetInfos) {
+  await Promise.all(targetInfos.map(async (info) => {
     if (info.type !== "page") {
-      continue;
+      return;
     }
     updateTargetInfo(state, info);
     try {
@@ -1896,7 +1925,7 @@ export async function start() {
     } catch (err) {
       state.lastObservedError = `attach page failed: ${err?.message || err}`;
     }
-  }
+  }));
 
   if (!state.targetsById.size) {
     throw new Error(`Failed to attach any page target for inspection. Last error: ${state.lastObservedError || "unknown"}`);

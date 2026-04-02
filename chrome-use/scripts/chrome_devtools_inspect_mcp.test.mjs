@@ -10,6 +10,7 @@ import {
   createInspectStore,
   handleInspectAction,
   reflectSelectionOnPage,
+  selectTargetInfosForStartupUrl,
   waitForFileSignal,
 } from "./chrome_devtools_inspect_mcp.mjs";
 
@@ -250,4 +251,43 @@ test("reflectSelectionOnPage flips the page banner to selected state", async () 
     call.sessionId === "session-1" &&
     call.params?.expression?.includes("Element selected. Return to the agent for the next step.") &&
     call.params?.expression?.includes("#1a9c5a")));
+});
+
+test("selectTargetInfosForStartupUrl prefers the recorded startup target", async () => {
+  const { rootDir, state } = await makeState();
+  await atomicWriteJson(state.store.preferredTargetPath, {
+    targetId: "target-2",
+    url: "http://127.0.0.1:8000/",
+    recordedAt: "2026-04-01T00:00:00.000Z",
+  });
+
+  const selected = await selectTargetInfosForStartupUrl(
+    state.store,
+    [
+      { targetId: "target-1", type: "page", url: "http://127.0.0.1:8000/" },
+      { targetId: "target-2", type: "page", url: "http://127.0.0.1:8000/" },
+      { targetId: "target-3", type: "page", url: "https://mail.xmu.edu.cn/" },
+    ],
+    "http://127.0.0.1:8000/",
+  );
+
+  assert.deepEqual(selected.map((item) => item.targetId), ["target-2"]);
+  await rm(rootDir, { recursive: true, force: true });
+});
+
+test("selectTargetInfosForStartupUrl falls back to the first exact startup match", async () => {
+  const { rootDir, state } = await makeState();
+
+  const selected = await selectTargetInfosForStartupUrl(
+    state.store,
+    [
+      { targetId: "target-1", type: "page", url: "http://127.0.0.1:8000/" },
+      { targetId: "target-2", type: "page", url: "http://127.0.0.1:8000/" },
+      { targetId: "target-3", type: "page", url: "https://mail.xmu.edu.cn/" },
+    ],
+    "http://127.0.0.1:8000/",
+  );
+
+  assert.deepEqual(selected.map((item) => item.targetId), ["target-1"]);
+  await rm(rootDir, { recursive: true, force: true });
 });
