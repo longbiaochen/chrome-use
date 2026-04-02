@@ -19,12 +19,13 @@ Use this skill when an agent needs deterministic, inspect-first Chrome DOM work 
    Reuse must open a new tab on the running dedicated-profile instance instead of creating a second dedicated window.
 4. Ensure the session is attached to the dedicated debug endpoint and that the dedicated profile still has exactly one Chrome window.
 5. Run in inspect MCP mode and create a durable capture workflow with `inspect(action="begin_capture")`. This returns immediately with a `workflowId`.
-6. If the current client cannot drive the inspect MCP handshake reliably, create the durable workflow first, then restart or attach the inspect bridge so it rehydrates `activeWorkflowId` from persisted state and arms inspect mode on the open page targets.
+6. If the current client cannot drive the inspect MCP handshake reliably, attach the inspect bridge, let it rehydrate any persisted `activeWorkflowId`, and verify whether the durable state is stale before presenting anything to the user.
+   Check `~/.chrome-use/state/inspect/<host-port>/session.json`, `events/current-selection.json`, and `workflows/<workflowId>.json`.
 7. Confirm inspect mode is armed, then have the user select an element in Chrome and call `inspect(action="await_selection", workflowId="<workflowId>")`.
 8. Treat the selection as valid only if it is clearly for the current `workflowId` and follows a fresh operator click for this capture cycle.
-   If `await_selection` appears to return immediately with stale prior context, do not present it as the new selection. Restart capture or create a fresh workflow and retry.
-9. Do not return a final response, a completion summary, or a "Worked for ..." timeout-style message before receiving `phase=awaiting_user_instruction` with the selected-element payload.
-10. If `phase=awaiting_user_instruction`, report the selected element with enough detail for the operator to identify and modify it without another lookup.
+   If `await_selection` appears to return immediately with stale prior context, or the durable files only show an older `updatedAt` / `payload.observedAt`, do not present it as the new selection. Restart capture or create a fresh workflow and retry.
+9. Do not return a final response, a completion summary, or a "Worked for ..." timeout-style message before receiving a fresh `phase=awaiting_user_instruction` or equivalent fresh `selection_received` payload for the current capture cycle.
+10. If a fresh selection is present, report the selected element with enough detail for the operator to identify and modify it without another lookup.
    Include at least:
    - `summary`
    - the element tag / `nodeName`
@@ -43,15 +44,15 @@ Use this skill when an agent needs deterministic, inspect-first Chrome DOM work 
 ### `scripts/open_url.sh`
 Starts or reuses dedicated Chrome, enforces the single-window dedicated-profile invariant, and prints the active debug URL.
 
-### `scripts/../chrome-use/scripts/chrome_devtools_mcp_wrapper_inspect.sh`
-Starts inspect-aware MCP bridge for `inspect_selected_element` and `inspect`.
+### `scripts/chrome_devtools_mcp_wrapper.sh`
+Starts the inspect-aware MCP bridge for `inspect_selected_element` and `inspect`. This is the canonical entrypoint from the `chrome-inspect` skill repo and delegates to the sibling `chrome-use` wrapper.
 
 ## Notes
 
 - Keep the same dedicated profile across sessions with `CHROME_USE_PROFILE_DIR`.
 - Keep the dedicated `agent-profile` isolated to one Chrome window; other Chrome profile windows may exist separately.
-- For explicit mismatches between expected profile/debug endpoint, run `scripts/../chrome-use/scripts/doctor.sh`.
+- For explicit mismatches between expected profile/debug endpoint, run `../chrome-use/scripts/doctor.sh` from the `chrome-inspect` repo root.
 - `about:blank` is the fallback when no URL is supplied.
 - `inspect(action="capture")` still exists as a compatibility shortcut, but `begin_capture` then `await_selection` is the stable default flow.
 - If the inspect bridge is attached but durable session state still shows `activeWorkflowId: null`, recover by creating a fresh workflow, then restart the inspect bridge so it rehydrates that workflow and arms inspect mode from persisted state.
-- If `await_selection` resolves suspiciously fast without an obvious new click for the current capture cycle, treat it as stale context and restart capture instead of showing it as the fresh selection.
+- If `await_selection` resolves suspiciously fast without an obvious new click for the current capture cycle, or the current-selection file still carries an older timestamp, treat it as stale context and restart capture instead of showing it as the fresh selection.
