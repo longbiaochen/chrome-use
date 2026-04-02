@@ -21,8 +21,10 @@ Use this skill when an agent needs deterministic, inspect-first Chrome DOM work 
 5. Run in inspect MCP mode and create a durable capture workflow with `inspect(action="begin_capture")`. This returns immediately with a `workflowId`.
 6. If the current client cannot drive the inspect MCP handshake reliably, create the durable workflow first, then restart or attach the inspect bridge so it rehydrates `activeWorkflowId` from persisted state and arms inspect mode on the open page targets.
 7. Confirm inspect mode is armed, then have the user select an element in Chrome and call `inspect(action="await_selection", workflowId="<workflowId>")`.
-8. Do not return a final response, a completion summary, or a "Worked for ..." timeout-style message before receiving `phase=awaiting_user_instruction` with the selected-element payload.
-9. If `phase=awaiting_user_instruction`, report the selected element with enough detail for the operator to identify and modify it without another lookup.
+8. Treat the selection as valid only if it is clearly for the current `workflowId` and follows a fresh operator click for this capture cycle.
+   If `await_selection` appears to return immediately with stale prior context, do not present it as the new selection. Restart capture or create a fresh workflow and retry.
+9. Do not return a final response, a completion summary, or a "Worked for ..." timeout-style message before receiving `phase=awaiting_user_instruction` with the selected-element payload.
+10. If `phase=awaiting_user_instruction`, report the selected element with enough detail for the operator to identify and modify it without another lookup.
    Include at least:
    - `summary`
    - the element tag / `nodeName`
@@ -33,8 +35,8 @@ Use this skill when an agent needs deterministic, inspect-first Chrome DOM work 
    - page `url`
    - `position`
    - the element content from `selectedElement.snippet` or equivalent captured text
-10. After reporting that richer element context, ask one concrete DOM instruction.
-11. Re-run the same workflow with `inspect(action="apply_instruction", workflowId="<workflowId>", instruction="<user text>")`.
+11. After reporting that richer element context, ask one concrete DOM instruction.
+12. Re-run the same workflow with `inspect(action="apply_instruction", workflowId="<workflowId>", instruction="<user text>")`.
 
 ## Tools
 
@@ -52,3 +54,4 @@ Starts inspect-aware MCP bridge for `inspect_selected_element` and `inspect`.
 - `about:blank` is the fallback when no URL is supplied.
 - `inspect(action="capture")` still exists as a compatibility shortcut, but `begin_capture` then `await_selection` is the stable default flow.
 - If the inspect bridge is attached but durable session state still shows `activeWorkflowId: null`, recover by creating a fresh workflow, then restart the inspect bridge so it rehydrates that workflow and arms inspect mode from persisted state.
+- If `await_selection` resolves suspiciously fast without an obvious new click for the current capture cycle, treat it as stale context and restart capture instead of showing it as the fresh selection.

@@ -164,13 +164,15 @@ For `/chrome-inspect` default flow, send:
 4. If the client cannot drive the inspect MCP handshake reliably, create the durable workflow first, then restart or attach the inspect bridge so it rehydrates `activeWorkflowId` from persisted state and arms inspect mode on the open page.
 5. Confirm inspect mode is armed, then select the target element in Chrome inspector flow.
 6. Call `inspect(action="await_selection", workflowId="<workflowId>")`.
-7. Wait for `phase=awaiting_user_instruction`; the agent should not finish the turn before that selection payload is returned.
-8. Confirm the agent reports enough selected-element detail to avoid another lookup:
+7. Treat the result as valid only if it belongs to the current `workflowId` and follows a fresh click for this capture cycle.
+   If `await_selection` appears to return immediately with stale prior context, restart capture instead of presenting it as the new selection.
+8. Wait for `phase=awaiting_user_instruction`; the agent should not finish the turn before that selection payload is returned.
+9. Confirm the agent reports enough selected-element detail to avoid another lookup:
    `summary`, tag / `nodeName`, `selectorHint`, `id`, `className`, `ariaLabel`, page URL,
    `position`, and the element content from `selectedElement.snippet` or equivalent captured text.
-9. Reply with a concrete edit instruction.
-10. Confirm returned `phase=ready_to_apply`.
-11. If the inspect bridge is attached but durable session state still shows `activeWorkflowId: null`, recover by creating a fresh workflow and restarting the inspect bridge.
+10. Reply with a concrete edit instruction.
+11. Confirm returned `phase=ready_to_apply`.
+12. If the inspect bridge is attached but durable session state still shows `activeWorkflowId: null`, recover by creating a fresh workflow and restarting the inspect bridge.
 
 For `/chrome-auth`, send the command with target URL when known, then follow interactive auth steps in the same dedicated profile session.
 
