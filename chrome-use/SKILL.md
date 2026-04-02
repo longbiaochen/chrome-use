@@ -46,9 +46,11 @@ These can be overridden with:
 - `scripts/open_url.sh [url]`
   Resolves startup URL in this priority:
   - explicit user URL
+  - detected project webapp entry from `CHROME_INSPECT_PROJECT_ROOT`
   - `CHROME_USE_DEFAULT_WEBAPP_URL`
   - `about:blank`
-  then ensures the URL is opened in the dedicated-profile Chrome instance.
+  then auto-starts the matching local project webapp when inspect mode requested it and
+  ensures the URL is opened in the dedicated-profile Chrome instance.
 - `scripts/chrome_devtools_mcp_wrapper.sh`
   Launches MCP against the validated debug endpoint.
 - `scripts/cleanup.sh`
@@ -58,8 +60,19 @@ These can be overridden with:
 
 - `scripts/resolve_startup_url.sh` returns:
   1. explicit user URL
-  2. `CHROME_USE_DEFAULT_WEBAPP_URL` when set
-  3. `about:blank`
+  2. detected project webapp entry from `CHROME_INSPECT_PROJECT_ROOT`
+  3. `CHROME_USE_DEFAULT_WEBAPP_URL` when set
+  4. `about:blank`
+
+- `scripts/open_url.sh` calls `ensure_project_webapp_running.sh` before attaching Chrome.
+  Local webapp autostart only applies when:
+  - `CHROME_INSPECT_AUTO_START_WEBAPP=1`
+  - `CHROME_INSPECT_PROJECT_ROOT` points to a local project
+  - the resolved target is a matching `localhost` or `127.0.0.1` URL for that project entry
+
+- Inspect workflows persist state under `~/.chrome-use/state/inspect/...`.
+  `chrome-use` is still shared runtime only, but `/chrome-inspect` depends on this durable state
+  plus the project-root startup path above.
 
 ## Client notes
 

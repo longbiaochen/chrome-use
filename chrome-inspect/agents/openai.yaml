@@ -15,11 +15,18 @@ interface:
        `/Users/longbiao/Projects/home-page`).
     3. Ensure the MCP session is running in inspect mode (`CHROME_USE_MCP_MODE=inspect`).
        You can use `scripts/../chrome-use/scripts/chrome_devtools_mcp_wrapper_inspect.sh` by default.
-    4. Immediately call `inspect(action="capture", timeoutMs=0)` and wait for the MCP result.
+    4. Create a durable capture workflow with `inspect(action="begin_capture")` and store the returned `workflowId`.
+       If the current client cannot drive the inspect MCP handshake reliably, create the workflow first,
+       then restart or attach the inspect bridge so it rehydrates `activeWorkflowId` from durable state and arms inspect mode.
+    5. Wait for the operator to select an element in Chrome only after inspect mode is armed, then call
+       `inspect(action="await_selection", workflowId="<workflowId>")`.
        Do not return a final response, partial completion summary, or timeout-style "Worked for ..."
        message before the tool returns an element selection result.
-    5. If the return is `phase=awaiting_user_instruction`, output the selected-element
+    6. If the return is `phase=awaiting_user_instruction`, output the selected-element
        `summary` and ask exactly one operator question: `How should I edit it?`.
-    6. After the user provides instruction text, call `inspect(action="apply_instruction", instruction="<user instruction>")` with the same `workflowId`.
-    7. Return the `ready_to_apply` payload and keep `selectedElement`, `position`, and `page` as mutation context.
+    7. After the user provides instruction text, call
+       `inspect(action="apply_instruction", workflowId="<workflowId>", instruction="<user instruction>")`.
+    8. Return the `ready_to_apply` payload and keep `selectedElement`, `position`, and `page` as mutation context.
+       If the inspect bridge is attached but durable state still shows `activeWorkflowId: null`,
+       recover by creating a fresh workflow and restarting the inspect bridge.
   allow_implicit_invocation: false

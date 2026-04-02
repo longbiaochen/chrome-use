@@ -18,10 +18,12 @@ Use this skill when an agent needs deterministic, inspect-first Chrome DOM work 
 3. Start or reuse Chrome with the resolved URL through `bash scripts/open_url.sh "<resolved_url>"`.
    Reuse must open a new tab on the running dedicated-profile instance instead of creating a second dedicated window.
 4. Ensure the session is attached to the dedicated debug endpoint and that the dedicated profile still has exactly one Chrome window.
-5. Run in inspect MCP mode and call `inspect(action="capture", timeoutMs=0)` so it blocks until the user selects an element.
-6. Wait for the MCP result. Do not return a final response, a completion summary, or a "Worked for ..." timeout-style message before receiving `phase=awaiting_user_instruction` with the selected-element payload.
-7. If `phase=awaiting_user_instruction`, print concise selected-element summary and ask one concrete DOM instruction.
-8. Re-run the same workflow with `inspect(action="apply_instruction", instruction="<user text>")` using the same `workflowId`.
+5. Run in inspect MCP mode and create a durable capture workflow with `inspect(action="begin_capture")`. This returns immediately with a `workflowId`.
+6. If the current client cannot drive the inspect MCP handshake reliably, create the durable workflow first, then restart or attach the inspect bridge so it rehydrates `activeWorkflowId` from persisted state and arms inspect mode on the open page targets.
+7. Confirm inspect mode is armed, then have the user select an element in Chrome and call `inspect(action="await_selection", workflowId="<workflowId>")`.
+8. Do not return a final response, a completion summary, or a "Worked for ..." timeout-style message before receiving `phase=awaiting_user_instruction` with the selected-element payload.
+9. If `phase=awaiting_user_instruction`, print concise selected-element summary and ask one concrete DOM instruction.
+10. Re-run the same workflow with `inspect(action="apply_instruction", workflowId="<workflowId>", instruction="<user text>")`.
 
 ## Tools
 
@@ -37,3 +39,5 @@ Starts inspect-aware MCP bridge for `inspect_selected_element` and `inspect`.
 - Keep the dedicated `agent-profile` isolated to one Chrome window; other Chrome profile windows may exist separately.
 - For explicit mismatches between expected profile/debug endpoint, run `scripts/../chrome-use/scripts/doctor.sh`.
 - `about:blank` is the fallback when no URL is supplied.
+- `inspect(action="capture")` still exists as a compatibility shortcut, but `begin_capture` then `await_selection` is the stable default flow.
+- If the inspect bridge is attached but durable session state still shows `activeWorkflowId: null`, recover by creating a fresh workflow, then restart the inspect bridge so it rehydrates that workflow and arms inspect mode from persisted state.
