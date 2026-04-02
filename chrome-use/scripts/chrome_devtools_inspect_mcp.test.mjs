@@ -9,7 +9,10 @@ import {
   createFrameParser,
   createInspectStore,
   handleInspectAction,
+  isCurrentSelectionFreshForWorkflow,
+  isRetryableSelectionMaterializationError,
   reflectSelectionOnPage,
+  restoreActiveWorkflowState,
   selectTargetInfosForStartupUrl,
   waitForFileSignal,
 } from "./chrome_devtools_inspect_mcp.mjs";
@@ -160,6 +163,79 @@ test("workflow lifecycle supports begin, await, get_status, and apply_instructio
   const finalWorkflow = JSON.parse(await readFile(state.store.workflowPath(begin.workflowId), "utf8"));
   assert.equal(finalWorkflow.status, "ready_to_apply");
   assert.equal(finalWorkflow.userInstruction, "Change text to Submit now");
+
+  await rm(rootDir, { recursive: true, force: true });
+});
+
+test("restoreActiveWorkflowState clears terminal persisted workflows", async () => {
+  const { rootDir, state } = await makeState();
+  state.activeWorkflowId = "wf-stale";
+
+  await atomicWriteJson(state.store.workflowPath("wf-stale"), {
+    workflowId: "wf-stale",
+    sequence: 2,
+    createdAt: "2026-04-01T00:00:00.000Z",
+    updatedAt: "2026-04-01T00:00:01.000Z",
+    status: "browser_disconnected",
+    phase: "browser_disconnected",
+    payload: null,
+    selectedElement: null,
+    position: null,
+    page: null,
+    summary: null,
+    selectionSource: null,
+    userInstruction: null,
+    error: "The inspect bridge received SIGINT.",
+    targetId: null,
+  });
+
+  const restored = await restoreActiveWorkflowState(state.store, state);
+  assert.equal(restored.status, "browser_disconnected");
+  assert.equal(state.activeWorkflowId, null);
+
+  await rm(rootDir, { recursive: true, force: true });
+});
+
+test("isCurrentSelectionFreshForWorkflow rejects stale workflow selections", () => {
+  const currentSelection = {
+    workflowId: "wf-old",
+    payload: samplePayload(),
+  };
+
+  assert.equal(isCurrentSelectionFreshForWorkflow(currentSelection, "wf-new"), false);
+  assert.equal(isCurrentSelectionFreshForWorkflow(currentSelection, "wf-old"), true);
+  assert.equal(isCurrentSelectionFreshForWorkflow(currentSelection, null), true);
+});
+
+test("isRetryableSelectionMaterializationError only matches transient DOM bootstrap failures", () => {
+  assert.equal(
+    isRetryableSelectionMaterializationError(new Error("Document needs to be requested first")),
+    true,
+  );
+  assert.equal(
+    isRetryableSelectionMaterializationError(new Error("Could not match the selected element to a live page target.")),
+    false,
+  );
+});
+
+test("await_selection ignores stale current-selection records from another workflow", async () => {
+  const { rootDir, state } = await makeState();
+  const begin = await handleInspectAction(null, state, { action: "begin_capture" }, 1);
+
+  await atomicWriteJson(state.store.currentSelectionPath, {
+    workflowId: "wf-old",
+    payload: samplePayload(),
+  });
+
+  await assert.rejects(
+    handleInspectAction(
+      null,
+      state,
+      { action: "await_selection", workflowId: begin.workflowId, timeoutMs: 25, waitForSelectionMs: 25 },
+      2,
+    ),
+    /No selected element is available yet/,
+  );
 
   await rm(rootDir, { recursive: true, force: true });
 });

@@ -163,6 +163,7 @@ For `/chrome-inspect` default flow, send:
 3. The wrapper should pass the startup URL into the shared runtime so the inspect bridge can prioritize the freshly opened target instead of attaching unrelated tabs on the same debug endpoint.
 4. Call `inspect(action="begin_capture")` and store the returned `workflowId`.
 5. If the client cannot drive the inspect MCP handshake reliably, create the durable workflow first, then restart or attach the inspect bridge so it rehydrates `activeWorkflowId` from persisted state and arms inspect mode on the open page.
+   The bridge only rehydrates workflows that are still mid-capture (`waiting_for_selection` / `selection_received`); terminal stale workflows are cleared on startup.
 6. Confirm inspect mode is armed, then select the target element in Chrome inspector flow.
 7. Call `inspect(action="await_selection", workflowId="<workflowId>")`.
 8. Treat the result as valid only if it belongs to the current `workflowId` and follows a fresh click for this capture cycle.

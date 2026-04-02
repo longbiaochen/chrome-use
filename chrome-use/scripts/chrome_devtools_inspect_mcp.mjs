@@ -439,6 +439,27 @@ async function initializeStoreState(store, state) {
   state.activeWorkflowId = typeof session.activeWorkflowId === "string" ? session.activeWorkflowId : null;
 }
 
+function isWorkflowCaptureInProgress(workflow) {
+  if (!workflow) {
+    return false;
+  }
+  return workflow.status === "waiting_for_selection" || workflow.status === "selection_received";
+}
+
+export async function restoreActiveWorkflowState(store, state) {
+  if (!state.activeWorkflowId) {
+    return null;
+  }
+
+  const workflow = await readWorkflow(store, state.activeWorkflowId);
+  if (isWorkflowCaptureInProgress(workflow)) {
+    return workflow;
+  }
+
+  state.activeWorkflowId = null;
+  return workflow;
+}
+
 async function nextSequence(state) {
   state.storeSequence += 1;
   return state.storeSequence;
@@ -521,6 +542,21 @@ async function readWorkflow(store, workflowId) {
     return null;
   }
   return readJsonIfPresent(store.workflowPath(workflowId));
+}
+
+export function isCurrentSelectionFreshForWorkflow(currentSelection, workflowId) {
+  if (!currentSelection?.payload?.selectedElement) {
+    return false;
+  }
+  if (!workflowId) {
+    return true;
+  }
+  return currentSelection.workflowId === workflowId;
+}
+
+export function isRetryableSelectionMaterializationError(error) {
+  const message = String(error?.message || error || "");
+  return message.includes("Document needs to be requested first");
 }
 
 export async function waitForFileSignal({
@@ -1283,9 +1319,9 @@ async function materializeSelectionPayload(cdp, state, selection) {
   );
 }
 
-async function resolveLatestSelection(state, cdp, waitForSelectionMs, timeoutMs) {
+async function resolveLatestSelection(state, cdp, waitForSelectionMs, timeoutMs, workflowId = state.activeWorkflowId) {
   const currentSelection = await readJsonIfPresent(state.store.currentSelectionPath);
-  if (currentSelection?.payload?.selectedElement) {
+  if (isCurrentSelectionFreshForWorkflow(currentSelection, workflowId)) {
     return currentSelection.payload;
   }
 
@@ -1304,14 +1340,13 @@ async function resolveLatestSelection(state, cdp, waitForSelectionMs, timeoutMs)
 
     for (const [targetId, sessionState] of state.targetsById) {
       const pageInfo = state.targetInfosByTargetId.get(targetId) || {};
-      const activeWorkflowId = state.activeWorkflowId;
-      if (activeWorkflowId) {
+      if (workflowId) {
         const pageClickPayload = await resolveSelectionByPageClick(
           cdp,
           state,
           sessionState,
           pageInfo,
-          activeWorkflowId,
+          workflowId,
         );
         if (pageClickPayload) {
           return pageClickPayload;
@@ -1335,9 +1370,9 @@ async function resolveLatestSelection(state, cdp, waitForSelectionMs, timeoutMs)
   throw new Error(formatSelectionNotReadyMessage(timeoutMs, state));
 }
 
-async function tryResolveLatestSelection(state, cdp, waitForSelectionMs, timeoutMs) {
+async function tryResolveLatestSelection(state, cdp, waitForSelectionMs, timeoutMs, workflowId = state.activeWorkflowId) {
   try {
-    return await resolveLatestSelection(state, cdp, waitForSelectionMs, timeoutMs);
+    return await resolveLatestSelection(state, cdp, waitForSelectionMs, timeoutMs, workflowId);
   } catch (err) {
     const message = String(err?.message || "");
     if (message.startsWith("No selected element is available yet.")) {
@@ -1468,7 +1503,7 @@ async function awaitWorkflowSelection(state, cdp, workflowId, waitForSelectionMs
       });
     }
 
-    const fallback = await tryResolveLatestSelection(state, cdp, waitForSelectionMs, pollMs);
+    const fallback = await tryResolveLatestSelection(state, cdp, waitForSelectionMs, pollMs, workflowId);
     if (fallback) {
       await persistRecoveredSelection(state, workflowId, fallback);
       const recovered = await persistWorkflowState(state.store, state, workflowId, {
@@ -1496,6 +1531,7 @@ async function awaitWorkflowSelection(state, cdp, workflowId, waitForSelectionMs
       cdp,
       waitForSelectionMs,
       timeoutMs === 0 ? waitForSelectionMs * 2 : timeoutMs,
+      workflowId,
     );
     await persistRecoveredSelection(state, workflowId, fallback);
     const recovered = await persistWorkflowState(state.store, state, workflowId, {
@@ -1689,7 +1725,16 @@ function queueSelectionRecord(cdp, state, selection) {
     .then(() => recordSelectionForWorkflow(cdp, state, selection))
     .catch(async (err) => {
       state.lastObservedError = err?.message || String(err);
-      logSignal("selection_record_error", { error: state.lastObservedError });
+      const retryable = isRetryableSelectionMaterializationError(err);
+      logSignal(retryable ? "selection_record_retryable_error" : "selection_record_error", {
+        error: state.lastObservedError,
+      });
+      if (retryable) {
+        await persistSessionState(state.store, state, {
+          status: state.activeWorkflowId ? "waiting_for_selection" : "bridge_ready",
+        });
+        return null;
+      }
       if (state.activeWorkflowId) {
         await persistWorkflowState(state.store, state, state.activeWorkflowId, {
           status: "error",
@@ -1905,6 +1950,7 @@ export async function start() {
   };
 
   await initializeStoreState(state.store, state);
+  const restoredWorkflow = await restoreActiveWorkflowState(state.store, state);
 
   let targetInfos = await loadTargetsFromTargetDomain(cdp, state);
   if (!targetInfos.length) {
@@ -1931,7 +1977,9 @@ export async function start() {
     throw new Error(`Failed to attach any page target for inspection. Last error: ${state.lastObservedError || "unknown"}`);
   }
 
-  await persistSessionState(state.store, state, { status: "bridge_ready" });
+  await persistSessionState(state.store, state, {
+    status: state.activeWorkflowId ? restoredWorkflow?.status || "waiting_for_selection" : "bridge_ready",
+  });
   logSignal("bridge_ready", { targets: state.targetsById.size, store: state.store.inspectDir });
 
   cdp.onEvent((message) => {

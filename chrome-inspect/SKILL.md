@@ -22,6 +22,7 @@ Use this skill when an agent needs deterministic, inspect-first Chrome DOM work 
 5. The wrapper should pass the startup URL into the shared runtime so the inspect bridge can prioritize the freshly opened target instead of attaching unrelated tabs on the same debug endpoint.
 6. Run in inspect MCP mode and create a durable capture workflow with `inspect(action="begin_capture")`. This returns immediately with a `workflowId`.
 7. If the current client cannot drive the inspect MCP handshake reliably, attach the inspect bridge, let it rehydrate any persisted `activeWorkflowId`, and verify whether the durable state is stale before presenting anything to the user.
+   Only in-progress capture workflows should be rehydrated automatically; terminal stale workflows should be cleared and replaced with a fresh capture.
    Check `~/.chrome-use/state/inspect/<host-port>/session.json`, `events/current-selection.json`, and `workflows/<workflowId>.json`.
 8. Confirm inspect mode is armed, then have the user select an element in Chrome and call `inspect(action="await_selection", workflowId="<workflowId>")`.
 9. Treat the selection as valid only if it is clearly for the current `workflowId` and follows a fresh operator click for this capture cycle.
