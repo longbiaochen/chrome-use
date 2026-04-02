@@ -971,6 +971,46 @@ async function clearPageSelectionCapture(cdp, sessionState) {
   await setInspectModeForSession(cdp, sessionState, "none");
 }
 
+export async function reflectSelectionOnPage(cdp, sessionState, workflowId, payload) {
+  if (!sessionState || !workflowId || !payload?.selectedElement) {
+    return false;
+  }
+  const { activeCdp, sessionId } = getSessionRuntime(sessionState, cdp);
+  const selected = {
+    workflowId,
+    at: Date.now(),
+    tagName: payload.selectedElement.nodeName || null,
+    id: payload.selectedElement.id || null,
+    className: payload.selectedElement.className || null,
+    clientX: null,
+    clientY: null,
+  };
+  const expression = `(() => {
+    const state = window.__chromeInspectAgentState;
+    if (!state || state.workflowId !== ${JSON.stringify(workflowId)}) return false;
+    state.cancelled = false;
+    state.selected = ${JSON.stringify(selected)};
+    if (typeof state.renderBanner === "function") {
+      state.renderBanner("Element selected. Return to the agent for the next step.", "#1a9c5a");
+    }
+    if (typeof state.updateHeartbeat === "function") {
+      state.updateHeartbeat();
+    }
+    return true;
+  })()`;
+
+  try {
+    const result = await activeCdp.send(
+      "Runtime.evaluate",
+      { expression, returnByValue: true, awaitPromise: true },
+      sessionId,
+    );
+    return !!result?.result?.value;
+  } catch {
+    return false;
+  }
+}
+
 async function armPageSelectionCapture(cdp, state, workflowId) {
   const targetIds = [...state.targetsById.keys()];
   for (const targetId of targetIds) {
@@ -1567,6 +1607,7 @@ export async function handleInspectAction(cdp, state, args, messageId) {
 async function recordSelectionForWorkflow(cdp, state, selection) {
   const payload = await materializeSelectionPayload(cdp, state, selection);
   const workflowId = state.activeWorkflowId;
+  const sessionState = selection.targetId ? state.targetsById.get(selection.targetId) : null;
 
   const currentSelection = await persistCurrentSelection(state.store, state, {
     workflowId: workflowId || null,
@@ -1597,6 +1638,9 @@ async function recordSelectionForWorkflow(cdp, state, selection) {
       sequence: workflow.sequence,
       targetId: selection.targetId || null,
     });
+    if (sessionState) {
+      await reflectSelectionOnPage(cdp, sessionState, workflowId, payload);
+    }
   } else {
     logSignal("selection_recorded_without_workflow", {
       sequence: currentSelection.sequence,

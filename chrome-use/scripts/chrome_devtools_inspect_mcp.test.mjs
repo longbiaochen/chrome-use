@@ -9,6 +9,7 @@ import {
   createFrameParser,
   createInspectStore,
   handleInspectAction,
+  reflectSelectionOnPage,
   waitForFileSignal,
 } from "./chrome_devtools_inspect_mcp.mjs";
 
@@ -217,4 +218,36 @@ test("begin_capture arms Chrome inspect mode and apply_instruction clears it", a
     call.method === "Overlay.setInspectMode" && call.params?.mode === "none" && call.sessionId === "session-1"));
 
   await rm(rootDir, { recursive: true, force: true });
+});
+
+test("reflectSelectionOnPage flips the page banner to selected state", async () => {
+  const sent = [];
+  const mockCdp = {
+    async send(method, params = {}, sessionId) {
+      sent.push({ method, params, sessionId });
+      if (method === "Runtime.evaluate") {
+        return { result: { value: true } };
+      }
+      return {};
+    },
+  };
+
+  const updated = await reflectSelectionOnPage(
+    mockCdp,
+    {
+      targetId: "page-1",
+      sessionId: "session-1",
+      cdp: null,
+      frameId: "frame-1",
+    },
+    "wf-1",
+    samplePayload(),
+  );
+
+  assert.equal(updated, true);
+  assert.ok(sent.some((call) =>
+    call.method === "Runtime.evaluate" &&
+    call.sessionId === "session-1" &&
+    call.params?.expression?.includes("Element selected. Return to the agent for the next step.") &&
+    call.params?.expression?.includes("#1a9c5a")));
 });
