@@ -53,6 +53,12 @@ These can be overridden with:
   ensures the URL is opened in the dedicated-profile Chrome instance.
 - `scripts/chrome_devtools_mcp_wrapper.sh`
   Launches MCP against the validated debug endpoint.
+- `scripts/inspect_capture.mjs`
+  Runs direct-CDP element capture against the dedicated debug endpoint for `begin`, `await`, `apply`, and `once` workflows without requiring an MCP transport.
+  Typical use:
+  - `node scripts/inspect_capture.mjs begin --project-root /path/to/repo`
+  - `node scripts/inspect_capture.mjs await --workflow-id <id>`
+  - `node scripts/inspect_capture.mjs once --project-root /path/to/repo`
 - `scripts/cleanup.sh`
   Removes stale helper logs.
 

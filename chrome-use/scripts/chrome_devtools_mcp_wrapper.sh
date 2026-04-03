@@ -31,17 +31,10 @@ if [[ "$INSPECT_MODE" == "inspect" || "$INSPECT_MODE" == "element-inspect" ]]; t
     export CHROME_INSPECT_AUTO_START_WEBAPP=1
   fi
 
-  if [[ -n "$STARTUP_URL" ]]; then
-    DEBUG_URL="$("$SCRIPT_DIR/open_url.sh" "$STARTUP_URL")"
-  else
-    DEBUG_URL="$("$SCRIPT_DIR/open_url.sh")"
-  fi
+  RESOLVED_STARTUP_URL="$("$SCRIPT_DIR/resolve_startup_url.sh" "$STARTUP_URL")"
+  DEBUG_URL="$("$SCRIPT_DIR/open_url.sh" "$RESOLVED_STARTUP_URL")"
 
-  if [[ -n "$STARTUP_URL" ]]; then
-    exec node "$INSPECT_SCRIPT" --browser-url="$DEBUG_URL" --startup-url="$STARTUP_URL"
-  fi
-
-  exec node "$INSPECT_SCRIPT" --browser-url="$DEBUG_URL"
+  exec node "$INSPECT_SCRIPT" --browser-url="$DEBUG_URL" --startup-url="$RESOLVED_STARTUP_URL"
 fi
 
 DEBUG_URL="$("$SCRIPT_DIR/ensure_profile.sh")"

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import {
@@ -19,6 +20,7 @@ const DEFAULT_MIN_WAIT_MS = 500;
 const DEFAULT_POLL_MS = 250;
 const DEFAULT_TRUNCATE = 400;
 const CDP_METHOD_NOT_FOUND_CODE = -32601;
+const BRIDGE_OWNER_VERSION = 1;
 
 function parseFlags(args) {
   const flags = {};
@@ -355,6 +357,7 @@ export function createInspectStore({
     eventsDir,
     sessionPath,
     currentSelectionPath,
+    ownerPath: path.join(inspectDir, "bridge-owner.json"),
     preferredTargetPath: path.join(inspectDir, "preferred-target.json"),
     workflowPath(workflowId) {
       return path.join(workflowsDir, `${workflowId}.json`);
@@ -432,11 +435,161 @@ function logSignal(event, details = {}) {
   })}\n`);
 }
 
+export function getDefaultDebugUrl() {
+  const host = process.env.CHROME_USE_DEBUG_HOST || "127.0.0.1";
+  const port = process.env.CHROME_USE_DEBUG_PORT || "9223";
+  return `http://${host}:${port}`;
+}
+
 async function initializeStoreState(store, state) {
   await ensureInspectStore(store);
   const session = (await readJsonIfPresent(store.sessionPath)) || {};
   state.storeSequence = Number.isFinite(Number(session.sequence)) ? Number(session.sequence) : 0;
   state.activeWorkflowId = typeof session.activeWorkflowId === "string" ? session.activeWorkflowId : null;
+}
+
+function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if (err?.code === "EPERM") {
+      return true;
+    }
+    return false;
+  }
+}
+
+function isBridgeOwnerOrphaned(owner, isAlive = isPidAlive) {
+  if (!owner || !Number.isInteger(owner.pid) || owner.pid <= 0) {
+    return false;
+  }
+  if (owner.ppid === 1) {
+    return true;
+  }
+  if (!Number.isInteger(owner.ppid) || owner.ppid <= 0) {
+    return false;
+  }
+  return !isAlive(owner.ppid);
+}
+
+async function killOwnedProcess(pid, signal = "SIGTERM") {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return;
+  }
+  try {
+    process.kill(pid, signal);
+  } catch (err) {
+    if (err?.code !== "ESRCH") {
+      throw err;
+    }
+  }
+}
+
+async function sleepUntilProcessExit(pid, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isPidAlive(pid)) {
+      return true;
+    }
+    await sleep(50);
+  }
+  return !isPidAlive(pid);
+}
+
+async function readBridgeOwner(store) {
+  return readJsonIfPresent(store.ownerPath);
+}
+
+async function persistBridgeOwner(store, owner) {
+  await atomicWriteJson(store.ownerPath, owner);
+  return owner;
+}
+
+function clearBridgeOwnerSync(store, ownerPid = null) {
+  try {
+    if (!existsSync(store.ownerPath)) {
+      return;
+    }
+    if (ownerPid !== null) {
+      const current = JSON.parse(readFileSync(store.ownerPath, "utf8"));
+      if (current?.pid !== ownerPid) {
+        return;
+      }
+    }
+    unlinkSync(store.ownerPath);
+  } catch {
+    // Ignore best-effort cleanup failures.
+  }
+}
+
+async function clearBridgeOwner(store, ownerPid = null) {
+  clearBridgeOwnerSync(store, ownerPid);
+}
+
+export async function claimBridgeOwnership(
+  store,
+  {
+    debugUrl,
+    startupUrl = "",
+    processInfo = {
+      pid: process.pid,
+      ppid: process.ppid,
+      startedAt: new Date().toISOString(),
+    },
+  },
+  {
+    isProcessAlive = isPidAlive,
+    isOwnerOrphaned = isBridgeOwnerOrphaned,
+    terminateProcess = killOwnedProcess,
+    waitForExit = sleepUntilProcessExit,
+  } = {},
+) {
+  const existingOwner = await readBridgeOwner(store);
+  if (existingOwner?.pid && existingOwner.pid !== processInfo.pid) {
+    const ownerAlive = isProcessAlive(existingOwner.pid);
+    if (ownerAlive) {
+      if (!isOwnerOrphaned(existingOwner, isProcessAlive)) {
+        throw new Error(
+          `Another inspect bridge is already running for ${debugUrl} (pid ${existingOwner.pid}).`,
+        );
+      }
+      await terminateProcess(existingOwner.pid);
+      if (existingOwner.upstreamPid && existingOwner.upstreamPid !== existingOwner.pid) {
+        await terminateProcess(existingOwner.upstreamPid);
+      }
+      await waitForExit(existingOwner.pid);
+      if (existingOwner.upstreamPid && existingOwner.upstreamPid !== existingOwner.pid) {
+        await waitForExit(existingOwner.upstreamPid);
+      }
+    }
+    await clearBridgeOwner(store, existingOwner.pid);
+  }
+
+  const owner = {
+    version: BRIDGE_OWNER_VERSION,
+    pid: processInfo.pid,
+    ppid: processInfo.ppid,
+    startedAt: processInfo.startedAt,
+    debugUrl,
+    startupUrl,
+    upstreamPid: null,
+    claimedAt: new Date().toISOString(),
+  };
+  await persistBridgeOwner(store, owner);
+  return owner;
+}
+
+async function refreshBridgeOwner(store, owner, patch = {}) {
+  const nextOwner = {
+    ...owner,
+    ...patch,
+  };
+  await persistBridgeOwner(store, nextOwner);
+  return nextOwner;
 }
 
 function isWorkflowCaptureInProgress(workflow) {
@@ -446,13 +599,14 @@ function isWorkflowCaptureInProgress(workflow) {
   return workflow.status === "waiting_for_selection" || workflow.status === "selection_received";
 }
 
-export async function restoreActiveWorkflowState(store, state) {
+export async function restoreActiveWorkflowState(store, state, owner = null) {
   if (!state.activeWorkflowId) {
     return null;
   }
 
   const workflow = await readWorkflow(store, state.activeWorkflowId);
-  if (isWorkflowCaptureInProgress(workflow)) {
+  const ownerValid = !!owner && owner.pid === process.pid;
+  if (isWorkflowCaptureInProgress(workflow) && ownerValid) {
     return workflow;
   }
 
@@ -468,12 +622,18 @@ async function nextSequence(state) {
 async function persistSessionState(store, state, patch = {}) {
   const previous = (await readJsonIfPresent(store.sessionPath)) || {};
   const sequence = await nextSequence(state);
+  const currentOwner = state.bridgeOwner || (await readBridgeOwner(store));
   const session = {
     sequence,
     updatedAt: new Date().toISOString(),
     activeWorkflowId: state.activeWorkflowId || null,
     status: patch.status || previous.status || "bridge_ready",
     lastError: patch.error || previous.lastError || null,
+    startupUrl:
+      patch.startupUrl !== undefined
+        ? patch.startupUrl
+        : previous.startupUrl || state.startupUrl || null,
+    owner: currentOwner || null,
     targets: [...state.targetInfosByTargetId.values()],
   };
   await atomicWriteJson(store.sessionPath, session);
@@ -668,6 +828,7 @@ async function resolveSelectedElementPayload(
 ) {
   const activeCdp = sessionState?.cdp || cdp;
   const selection = explicitSelection || state.lastSelectionEvent;
+  const domCacheKey = sessionState?.sessionId || selection?.targetId || "root";
   const directSession = String(sessionState?.sessionId || "").startsWith("direct:");
   const sessionId =
     selection?.sessionId && !String(selection.sessionId).startsWith("direct:")
@@ -684,6 +845,8 @@ async function resolveSelectedElementPayload(
   if (!backendNodeId) {
     throw new Error("Selection event did not include backendNodeId or nodeId. Re-select the element and retry.");
   }
+
+  await ensureDomReady(activeCdp, sessionId, state, domCacheKey);
 
   let nodeId = selection.nodeId;
   if (!nodeId && backendNodeId) {
@@ -806,6 +969,19 @@ function getSessionRuntime(sessionState, cdp) {
       ? sessionState.sessionId
       : null;
   return { activeCdp, sessionId };
+}
+
+async function ensureDomReady(activeCdp, sessionId, state, domCacheKey) {
+  if (!activeCdp) {
+    throw new Error("No active CDP session is available.");
+  }
+  const cacheKey = domCacheKey || sessionId || "root";
+  if (state.domReadyBySessionKey.has(cacheKey)) {
+    return;
+  }
+  await activeCdp.send("DOM.enable", {}, sessionId);
+  await activeCdp.send("DOM.getDocument", { depth: 0, pierce: false }, sessionId);
+  state.domReadyBySessionKey.add(cacheKey);
 }
 
 async function setInspectModeForSession(cdp, sessionState, mode) {
@@ -1094,6 +1270,7 @@ async function armPageSelectionCapture(cdp, state, workflowId) {
 
 async function resolveSelectionByPageClick(cdp, state, sessionState, pageInfo, workflowId) {
   const { activeCdp, sessionId } = getSessionRuntime(sessionState, cdp);
+  const domCacheKey = sessionState?.sessionId || sessionState?.targetId || "root";
 
   let metaResult = null;
   try {
@@ -1127,6 +1304,7 @@ async function resolveSelectionByPageClick(cdp, state, sessionState, pageInfo, w
   let backendNodeId = null;
   if (typeof meta.clientX === "number" && typeof meta.clientY === "number") {
     try {
+      await ensureDomReady(activeCdp, sessionId, state, domCacheKey);
       const hit = await activeCdp.send(
         "DOM.getNodeForLocation",
         {
@@ -1168,6 +1346,7 @@ async function resolveSelectionByPageClick(cdp, state, sessionState, pageInfo, w
     const objectId = selectedElementHandle?.result?.objectId;
     if (objectId) {
       try {
+        await ensureDomReady(activeCdp, sessionId, state, domCacheKey);
         const request = await activeCdp.send("DOM.requestNode", { objectId }, sessionId);
         nodeId = request?.nodeId || null;
       } catch {
@@ -1232,6 +1411,7 @@ async function readPageCaptureHeartbeat(cdp, sessionState, workflowId) {
 
 async function resolveSelectionByActiveElement(cdp, state, sessionState, pageInfo) {
   const { activeCdp, sessionId } = getSessionRuntime(sessionState, cdp);
+  const domCacheKey = sessionState?.sessionId || sessionState?.targetId || "root";
 
   let activeResult = null;
   try {
@@ -1254,6 +1434,7 @@ async function resolveSelectionByActiveElement(cdp, state, sessionState, pageInf
 
   let nodeId = null;
   try {
+    await ensureDomReady(activeCdp, sessionId, state, domCacheKey);
     const request = await activeCdp.send("DOM.requestNode", { objectId }, sessionId);
     nodeId = request?.nodeId;
   } catch {
@@ -1319,6 +1500,22 @@ async function materializeSelectionPayload(cdp, state, selection) {
   );
 }
 
+export async function materializeSelectionPayloadWithRecovery(cdp, state, selection) {
+  try {
+    return await materializeSelectionPayload(cdp, state, selection);
+  } catch (err) {
+    if (!isRetryableSelectionMaterializationError(err)) {
+      throw err;
+    }
+    const sessionState = selection?.targetId ? state.targetsById.get(selection.targetId) : null;
+    const domCacheKey = sessionState?.sessionId || selection?.targetId || "root";
+    state.domReadyBySessionKey.delete(domCacheKey);
+    const { activeCdp, sessionId } = getSessionRuntime(sessionState, cdp);
+    await ensureDomReady(activeCdp, sessionId, state, domCacheKey);
+    return materializeSelectionPayload(cdp, state, selection);
+  }
+}
+
 async function resolveLatestSelection(state, cdp, waitForSelectionMs, timeoutMs, workflowId = state.activeWorkflowId) {
   const currentSelection = await readJsonIfPresent(state.store.currentSelectionPath);
   if (isCurrentSelectionFreshForWorkflow(currentSelection, workflowId)) {
@@ -1335,7 +1532,7 @@ async function resolveLatestSelection(state, cdp, waitForSelectionMs, timeoutMs,
       start,
     );
     if (selection) {
-      return materializeSelectionPayload(cdp, state, selection);
+      return materializeSelectionPayloadWithRecovery(cdp, state, selection);
     }
 
     for (const [targetId, sessionState] of state.targetsById) {
@@ -1401,6 +1598,7 @@ function workflowToAwaitingPayload(workflow) {
     workflowId: workflow.workflowId,
     status: "awaiting_user_instruction",
     summary: workflow.summary || inspectSummary(payload),
+    observedAt: payload.observedAt || null,
     selectedElement: payload.selectedElement,
     position: payload.position,
     page: payload.page,
@@ -1669,7 +1867,7 @@ export async function handleInspectAction(cdp, state, args, messageId) {
 }
 
 async function recordSelectionForWorkflow(cdp, state, selection) {
-  const payload = await materializeSelectionPayload(cdp, state, selection);
+  const payload = await materializeSelectionPayloadWithRecovery(cdp, state, selection);
   const workflowId = state.activeWorkflowId;
   const sessionState = selection.targetId ? state.targetsById.get(selection.targetId) : null;
 
@@ -1729,12 +1927,6 @@ function queueSelectionRecord(cdp, state, selection) {
       logSignal(retryable ? "selection_record_retryable_error" : "selection_record_error", {
         error: state.lastObservedError,
       });
-      if (retryable) {
-        await persistSessionState(state.store, state, {
-          status: state.activeWorkflowId ? "waiting_for_selection" : "bridge_ready",
-        });
-        return null;
-      }
       if (state.activeWorkflowId) {
         await persistWorkflowState(state.store, state, state.activeWorkflowId, {
           status: "error",
@@ -1909,19 +2101,29 @@ async function markActiveWorkflowDisconnected(state, message) {
     phase: "browser_disconnected",
     error: message,
   });
+  state.activeWorkflowId = null;
   await persistSessionState(state.store, state, {
     status: "browser_disconnected",
     error: message,
   });
-  logSignal("browser_disconnected", { workflowId: state.activeWorkflowId, message });
+  logSignal("browser_disconnected", { message });
 }
 
-export async function start() {
-  const args = parseFlags(process.argv.slice(2));
-  const debugUrl = args["browser-url"] || "http://127.0.0.1:9223";
-  const upstreamBin = args["upstream-bin"] || "";
-  const startupUrl = args["startup-url"] || "";
+async function closeAttachedSessions(cdp, state) {
+  if (cdp && !cdp.isClosed()) {
+    cdp.close();
+  }
+  for (const sessionState of state.targetsById.values()) {
+    if (sessionState?.cdp && sessionState.cdp !== cdp && !sessionState.cdp.isClosed()) {
+      sessionState.cdp.close();
+    }
+  }
+}
 
+export async function connectInspectRuntime({
+  debugUrl = getDefaultDebugUrl(),
+  startupUrl = "",
+} = {}) {
   const version = await fetchJson(`${debugUrl}/json/version`);
   const wsUrl = version.webSocketDebuggerUrl;
   if (!wsUrl) {
@@ -1942,45 +2144,118 @@ export async function start() {
     targetDomainAvailable: false,
     activeWorkflowId: null,
     selectionRecorder: Promise.resolve(),
+    domReadyBySessionKey: new Set(),
     store: createInspectStore({
       debugHost: browserUrl.hostname,
       debugPort: browserUrl.port || "80",
     }),
     storeSequence: 0,
+    startupUrl,
+    bridgeOwner: null,
+    shuttingDown: null,
   };
 
-  await initializeStoreState(state.store, state);
-  const restoredWorkflow = await restoreActiveWorkflowState(state.store, state);
+  try {
+    await initializeStoreState(state.store, state);
+    state.bridgeOwner = await claimBridgeOwnership(state.store, {
+      debugUrl,
+      startupUrl,
+      processInfo: {
+        pid: process.pid,
+        ppid: process.ppid,
+        startedAt: new Date().toISOString(),
+      },
+    });
 
-  let targetInfos = await loadTargetsFromTargetDomain(cdp, state);
-  if (!targetInfos.length) {
-    targetInfos = await loadTargetsFromDebugList(debugUrl, state);
-  }
-  targetInfos = await selectTargetInfosForStartupUrl(state.store, targetInfos, startupUrl);
-  if (!targetInfos.length) {
-    throw new Error("No page target is available. Open a page in Chrome first and retry.");
-  }
+    const restoredWorkflow = await restoreActiveWorkflowState(state.store, state, state.bridgeOwner);
 
-  await Promise.all(targetInfos.map(async (info) => {
-    if (info.type !== "page") {
-      return;
+    let targetInfos = await loadTargetsFromTargetDomain(cdp, state);
+    if (!targetInfos.length) {
+      targetInfos = await loadTargetsFromDebugList(debugUrl, state);
     }
-    updateTargetInfo(state, info);
-    try {
-      await attachPageTarget(cdp, info, state);
-    } catch (err) {
-      state.lastObservedError = `attach page failed: ${err?.message || err}`;
+    targetInfos = await selectTargetInfosForStartupUrl(state.store, targetInfos, startupUrl);
+    if (!targetInfos.length) {
+      throw new Error("No page target is available. Open a page in Chrome first and retry.");
     }
-  }));
 
-  if (!state.targetsById.size) {
-    throw new Error(`Failed to attach any page target for inspection. Last error: ${state.lastObservedError || "unknown"}`);
+    await Promise.all(targetInfos.map(async (info) => {
+      if (info.type !== "page") {
+        return;
+      }
+      updateTargetInfo(state, info);
+      try {
+        await attachPageTarget(cdp, info, state);
+      } catch (err) {
+        state.lastObservedError = `attach page failed: ${err?.message || err}`;
+      }
+    }));
+
+    if (!state.targetsById.size) {
+      throw new Error(`Failed to attach any page target for inspection. Last error: ${state.lastObservedError || "unknown"}`);
+    }
+
+    await persistSessionState(state.store, state, {
+      startupUrl,
+      status: state.activeWorkflowId ? restoredWorkflow?.status || "waiting_for_selection" : "bridge_ready",
+    });
+    logSignal("bridge_ready", { targets: state.targetsById.size, store: state.store.inspectDir });
+
+    return {
+      cdp,
+      state,
+      debugUrl,
+      startupUrl,
+      restoredWorkflow,
+    };
+  } catch (err) {
+    clearBridgeOwnerSync(state.store, state.bridgeOwner?.pid || process.pid);
+    await closeAttachedSessions(cdp, state);
+    throw err;
   }
+}
 
-  await persistSessionState(state.store, state, {
-    status: state.activeWorkflowId ? restoredWorkflow?.status || "waiting_for_selection" : "bridge_ready",
+export async function closeInspectRuntime(cdp, state, { clearOwner = true } = {}) {
+  if (clearOwner) {
+    clearBridgeOwnerSync(state.store, state.bridgeOwner?.pid || process.pid);
+  }
+  await closeAttachedSessions(cdp, state);
+}
+
+export function toCliSelectionPayload(payload) {
+  return {
+    workflowId: payload.workflowId,
+    observedAt: payload.observedAt || null,
+    summary: payload.summary || null,
+    page: {
+      url: payload.page?.url || null,
+      title: payload.page?.title || null,
+    },
+    selectedElement: {
+      nodeName: payload.selectedElement?.nodeName || null,
+      selectorHint: payload.selectedElement?.selectorHint || null,
+      id: payload.selectedElement?.id || "",
+      className: payload.selectedElement?.className || "",
+      ariaLabel: payload.selectedElement?.ariaLabel || "",
+      snippet: payload.selectedElement?.snippet || "",
+    },
+    position: {
+      x: payload.position?.x ?? null,
+      y: payload.position?.y ?? null,
+      width: payload.position?.width ?? null,
+      height: payload.position?.height ?? null,
+    },
+  };
+}
+
+export async function start() {
+  const args = parseFlags(process.argv.slice(2));
+  const debugUrl = args["browser-url"] || getDefaultDebugUrl();
+  const upstreamBin = args["upstream-bin"] || "";
+  const startupUrl = args["startup-url"] || "";
+  const { cdp, state } = await connectInspectRuntime({ debugUrl, startupUrl });
+  process.on("exit", () => {
+    clearBridgeOwnerSync(state.store, state.bridgeOwner?.pid || process.pid);
   });
-  logSignal("bridge_ready", { targets: state.targetsById.size, store: state.store.inspectDir });
 
   cdp.onEvent((message) => {
     if (!state.targetDomainAvailable || !message?.method) {
@@ -2001,6 +2276,7 @@ export async function start() {
       const session = state.targetsById.get(targetId);
       if (session?.sessionId) {
         state.targetsBySessionId.delete(session.sessionId);
+        state.domReadyBySessionKey.delete(session.sessionId);
       }
       state.targetsById.delete(targetId);
       state.targetInfosByTargetId.delete(targetId);
@@ -2046,11 +2322,43 @@ export async function start() {
         { stdio: ["pipe", "pipe", "pipe"] },
       );
 
+  state.bridgeOwner = await refreshBridgeOwner(state.store, state.bridgeOwner, {
+    upstreamPid: child.pid || null,
+  });
+
+  const shutdown = async (reason, { exitCode = 0, signal = null, childAlreadyExited = false } = {}) => {
+    if (state.shuttingDown) {
+      return state.shuttingDown;
+    }
+    state.shuttingDown = (async () => {
+      await markActiveWorkflowDisconnected(state, reason);
+      clearBridgeOwnerSync(state.store, state.bridgeOwner?.pid || process.pid);
+      cdp.close();
+      for (const sessionState of state.targetsById.values()) {
+        if (sessionState?.cdp && sessionState.cdp !== cdp) {
+          sessionState.cdp.close();
+        }
+      }
+      if (!childAlreadyExited && child.pid) {
+        try {
+          child.kill(signal || "SIGTERM");
+        } catch {
+          // Ignore best-effort shutdown failures.
+        }
+      }
+      return exitCode;
+    })();
+    return state.shuttingDown;
+  };
+
   child.stderr.on("data", (chunk) => {
     process.stderr.write(`[upstream] ${chunk}`);
   });
   child.on("exit", async (code) => {
-    await markActiveWorkflowDisconnected(state, "The upstream MCP bridge exited.");
+    await shutdown("The upstream MCP bridge exited.", {
+      childAlreadyExited: true,
+      exitCode: code || 0,
+    });
     process.exit(code || 0);
   });
 
@@ -2156,14 +2464,27 @@ export async function start() {
   child.stdout.on("data", fromUpstream);
 
   process.on("SIGINT", async () => {
-    await markActiveWorkflowDisconnected(state, "The inspect bridge received SIGINT.");
-    cdp.close();
-    for (const sessionState of state.targetsById.values()) {
-      if (sessionState?.cdp && sessionState.cdp !== cdp) {
-        sessionState.cdp.close();
-      }
-    }
-    child.kill("SIGINT");
+    await shutdown("The inspect bridge received SIGINT.", {
+      signal: "SIGINT",
+    });
+    process.exit(0);
+  });
+  process.on("SIGTERM", async () => {
+    await shutdown("The inspect bridge received SIGTERM.", {
+      signal: "SIGTERM",
+    });
+    process.exit(0);
+  });
+  process.stdin.on("end", async () => {
+    await shutdown("The inspect bridge stdin closed.");
+    process.exit(0);
+  });
+  process.stdin.on("close", async () => {
+    await shutdown("The inspect bridge stdin closed.");
+    process.exit(0);
+  });
+  process.on("disconnect", async () => {
+    await shutdown("The inspect bridge parent process disconnected.");
     process.exit(0);
   });
 }

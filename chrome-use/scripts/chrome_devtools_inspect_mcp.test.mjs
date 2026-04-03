@@ -6,14 +6,18 @@ import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 
 import {
   atomicWriteJson,
+  claimBridgeOwnership,
   createFrameParser,
   createInspectStore,
+  getDefaultDebugUrl,
   handleInspectAction,
   isCurrentSelectionFreshForWorkflow,
   isRetryableSelectionMaterializationError,
+  materializeSelectionPayloadWithRecovery,
   reflectSelectionOnPage,
   restoreActiveWorkflowState,
   selectTargetInfosForStartupUrl,
+  toCliSelectionPayload,
   waitForFileSignal,
 } from "./chrome_devtools_inspect_mcp.mjs";
 
@@ -32,10 +36,15 @@ async function makeState() {
       store,
       storeSequence: 0,
       activeWorkflowId: null,
+      bridgeOwner: null,
+      domReadyBySessionKey: new Set(),
       targetInfosByTargetId: new Map(),
       targetsById: new Map(),
+      targetsBySessionId: new Map(),
       selectionWaiters: [],
       lastObservedError: null,
+      startupUrl: "",
+      selectionRecorder: Promise.resolve(),
     },
   };
 }
@@ -69,6 +78,75 @@ function samplePayload() {
     observedAt: "2026-04-01T00:00:00.000Z",
   };
 }
+
+test("getDefaultDebugUrl respects environment overrides", () => {
+  const priorHost = process.env.CHROME_USE_DEBUG_HOST;
+  const priorPort = process.env.CHROME_USE_DEBUG_PORT;
+  process.env.CHROME_USE_DEBUG_HOST = "127.0.0.2";
+  process.env.CHROME_USE_DEBUG_PORT = "9444";
+  assert.equal(getDefaultDebugUrl(), "http://127.0.0.2:9444");
+  if (priorHost === undefined) {
+    delete process.env.CHROME_USE_DEBUG_HOST;
+  } else {
+    process.env.CHROME_USE_DEBUG_HOST = priorHost;
+  }
+  if (priorPort === undefined) {
+    delete process.env.CHROME_USE_DEBUG_PORT;
+  } else {
+    process.env.CHROME_USE_DEBUG_PORT = priorPort;
+  }
+});
+
+test("toCliSelectionPayload returns the normalized selection contract", () => {
+  const payload = toCliSelectionPayload({
+    workflowId: "wf-1",
+    observedAt: "2026-04-01T00:00:00.000Z",
+    summary: "button selected",
+    page: {
+      url: "http://127.0.0.1:8000/",
+      title: "Example",
+    },
+    selectedElement: {
+      nodeName: "BUTTON",
+      selectorHint: "#submit",
+      id: "submit",
+      className: "primary",
+      ariaLabel: "Submit form",
+      snippet: "<button id=\"submit\">Save</button>",
+    },
+    position: {
+      x: 10,
+      y: 20,
+      width: 120,
+      height: 40,
+      quads: [],
+    },
+  });
+
+  assert.deepEqual(payload, {
+    workflowId: "wf-1",
+    observedAt: "2026-04-01T00:00:00.000Z",
+    summary: "button selected",
+    page: {
+      url: "http://127.0.0.1:8000/",
+      title: "Example",
+    },
+    selectedElement: {
+      nodeName: "BUTTON",
+      selectorHint: "#submit",
+      id: "submit",
+      className: "primary",
+      ariaLabel: "Submit form",
+      snippet: "<button id=\"submit\">Save</button>",
+    },
+    position: {
+      x: 10,
+      y: 20,
+      width: 120,
+      height: 40,
+    },
+  });
+});
 
 test("createFrameParser decodes split MCP frames", async () => {
   const seen = [];
@@ -196,6 +274,64 @@ test("restoreActiveWorkflowState clears terminal persisted workflows", async () 
   await rm(rootDir, { recursive: true, force: true });
 });
 
+test("restoreActiveWorkflowState clears in-progress workflows without a valid owner", async () => {
+  const { rootDir, state } = await makeState();
+  state.activeWorkflowId = "wf-stale";
+
+  await atomicWriteJson(state.store.workflowPath("wf-stale"), {
+    workflowId: "wf-stale",
+    sequence: 2,
+    createdAt: "2026-04-01T00:00:00.000Z",
+    updatedAt: "2026-04-01T00:00:01.000Z",
+    status: "waiting_for_selection",
+    phase: "waiting_for_selection",
+    payload: null,
+    selectedElement: null,
+    position: null,
+    page: null,
+    summary: null,
+    selectionSource: null,
+    userInstruction: null,
+    error: null,
+    targetId: null,
+  });
+
+  const restored = await restoreActiveWorkflowState(state.store, state, null);
+  assert.equal(restored.status, "waiting_for_selection");
+  assert.equal(state.activeWorkflowId, null);
+
+  await rm(rootDir, { recursive: true, force: true });
+});
+
+test("restoreActiveWorkflowState keeps in-progress workflows for the current owner", async () => {
+  const { rootDir, state } = await makeState();
+  state.activeWorkflowId = "wf-live";
+
+  await atomicWriteJson(state.store.workflowPath("wf-live"), {
+    workflowId: "wf-live",
+    sequence: 2,
+    createdAt: "2026-04-01T00:00:00.000Z",
+    updatedAt: "2026-04-01T00:00:01.000Z",
+    status: "waiting_for_selection",
+    phase: "waiting_for_selection",
+    payload: null,
+    selectedElement: null,
+    position: null,
+    page: null,
+    summary: null,
+    selectionSource: null,
+    userInstruction: null,
+    error: null,
+    targetId: null,
+  });
+
+  const restored = await restoreActiveWorkflowState(state.store, state, { pid: process.pid });
+  assert.equal(restored.status, "waiting_for_selection");
+  assert.equal(state.activeWorkflowId, "wf-live");
+
+  await rm(rootDir, { recursive: true, force: true });
+});
+
 test("isCurrentSelectionFreshForWorkflow rejects stale workflow selections", () => {
   const currentSelection = {
     workflowId: "wf-old",
@@ -216,6 +352,148 @@ test("isRetryableSelectionMaterializationError only matches transient DOM bootst
     isRetryableSelectionMaterializationError(new Error("Could not match the selected element to a live page target.")),
     false,
   );
+});
+
+test("materializeSelectionPayloadWithRecovery primes DOM after bootstrap failure", async () => {
+  const { rootDir, state } = await makeState();
+  const sent = [];
+  let firstPush = true;
+  const mockCdp = {
+    async send(method, params = {}, sessionId) {
+      sent.push({ method, params, sessionId });
+      if (method === "DOM.enable" || method === "DOM.getDocument") {
+        return {};
+      }
+      if (method === "DOM.pushNodesByBackendIdsToFrontend") {
+        if (firstPush) {
+          firstPush = false;
+          throw new Error("Document needs to be requested first");
+        }
+        return { nodeIds: [42] };
+      }
+      if (method === "DOM.describeNode") {
+        return {
+          node: {
+            nodeName: "BUTTON",
+            attributes: ["id", "submit", "class", "primary"],
+          },
+        };
+      }
+      if (method === "DOM.getBoxModel") {
+        return {
+          model: {
+            content: [10, 20, 130, 20, 130, 60, 10, 60],
+          },
+        };
+      }
+      if (method === "DOM.getOuterHTML") {
+        return { outerHTML: "<button id=\"submit\" class=\"primary\">Save</button>" };
+      }
+      throw new Error(`Unexpected CDP method: ${method}`);
+    },
+  };
+
+  state.targetsById.set("page-1", {
+    targetId: "page-1",
+    sessionId: "session-1",
+    cdp: null,
+    frameId: "frame-1",
+  });
+  state.targetInfosByTargetId.set("page-1", {
+    targetId: "page-1",
+    title: "Example",
+    url: "http://127.0.0.1:8000/",
+    type: "page",
+  });
+
+  const payload = await materializeSelectionPayloadWithRecovery(mockCdp, state, {
+    backendNodeId: 99,
+    targetId: "page-1",
+    sessionId: "session-1",
+    frameId: "frame-1",
+    eventTime: Date.now(),
+  });
+
+  assert.equal(payload.selectedElement.id, "submit");
+  assert.ok(sent.some((call) => call.method === "DOM.getDocument"));
+  assert.equal(
+    sent.filter((call) => call.method === "DOM.pushNodesByBackendIdsToFrontend").length,
+    2,
+  );
+
+  await rm(rootDir, { recursive: true, force: true });
+});
+
+test("claimBridgeOwnership replaces dead or orphaned owners and blocks live owners", async () => {
+  const { rootDir, state } = await makeState();
+
+  await atomicWriteJson(state.store.ownerPath, {
+    pid: 3000,
+    ppid: 2999,
+    debugUrl: "http://127.0.0.1:9223",
+    startupUrl: "http://127.0.0.1:8000/",
+  });
+  const deadOwner = await claimBridgeOwnership(
+    state.store,
+    {
+      debugUrl: "http://127.0.0.1:9223",
+      startupUrl: "http://127.0.0.1:8000/",
+      processInfo: { pid: 4000, ppid: 3999, startedAt: "2026-04-01T00:00:00.000Z" },
+    },
+    {
+      isProcessAlive: (pid) => pid === 4000,
+    },
+  );
+  assert.equal(deadOwner.pid, 4000);
+
+  const killed = [];
+  await atomicWriteJson(state.store.ownerPath, {
+    pid: 5000,
+    ppid: 1,
+    upstreamPid: 5001,
+    debugUrl: "http://127.0.0.1:9223",
+    startupUrl: "http://127.0.0.1:8000/",
+  });
+  const orphanOwner = await claimBridgeOwnership(
+    state.store,
+    {
+      debugUrl: "http://127.0.0.1:9223",
+      startupUrl: "http://127.0.0.1:8000/",
+      processInfo: { pid: 6000, ppid: 5999, startedAt: "2026-04-01T00:00:01.000Z" },
+    },
+    {
+      isProcessAlive: (pid) => pid === 5000 || pid === 5001 || pid === 6000,
+      terminateProcess: async (pid) => {
+        killed.push(pid);
+      },
+      waitForExit: async () => true,
+    },
+  );
+  assert.equal(orphanOwner.pid, 6000);
+  assert.deepEqual(killed, [5000, 5001]);
+
+  await atomicWriteJson(state.store.ownerPath, {
+    pid: 7000,
+    ppid: 6999,
+    debugUrl: "http://127.0.0.1:9223",
+    startupUrl: "http://127.0.0.1:8000/",
+  });
+  await assert.rejects(
+    claimBridgeOwnership(
+      state.store,
+      {
+        debugUrl: "http://127.0.0.1:9223",
+        startupUrl: "http://127.0.0.1:8000/",
+        processInfo: { pid: 8000, ppid: 7999, startedAt: "2026-04-01T00:00:02.000Z" },
+      },
+      {
+        isProcessAlive: (pid) => pid === 7000 || pid === 6999 || pid === 8000,
+      },
+    ),
+    /already running/,
+  );
+
+  await rm(rootDir, { recursive: true, force: true });
 });
 
 test("await_selection ignores stale current-selection records from another workflow", async () => {
