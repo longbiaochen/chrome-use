@@ -365,6 +365,46 @@ EOF
   assert_contains "Profile owner PID(s): 707" "$DOCTOR_STDOUT" "doctor helper process case reports browser root pid"
 }
 
+test_inspect_wrapper_forwards_resolved_startup_url() {
+  setup_case
+  local wrapper_dir="$CASE_DIR/wrapper"
+  local mock_node_dir="$CASE_DIR/mock-node"
+  mkdir -p "$wrapper_dir"
+  mkdir -p "$mock_node_dir"
+  cp "$REPO_ROOT/chrome-use/scripts/chrome_devtools_mcp_wrapper.sh" "$wrapper_dir/chrome_devtools_mcp_wrapper.sh"
+  chmod +x "$wrapper_dir/chrome_devtools_mcp_wrapper.sh"
+  cat >"$wrapper_dir/resolve_startup_url.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "http://127.0.0.1:4321/"
+EOF
+  chmod +x "$wrapper_dir/resolve_startup_url.sh"
+  cat >"$wrapper_dir/open_url.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >"${MOCK_OPEN_LOG:?}"
+echo "http://127.0.0.1:9223"
+EOF
+  chmod +x "$wrapper_dir/open_url.sh"
+  cat >"$wrapper_dir/chrome_devtools_inspect_mcp.mjs" <<'EOF'
+#!/usr/bin/env node
+EOF
+  chmod +x "$wrapper_dir/chrome_devtools_inspect_mcp.mjs"
+  cat >"$mock_node_dir/node" <<'EOF'
+#!/usr/bin/env bash
+if [[ -n "${MOCK_NODE_LOG:-}" ]]; then
+  printf '%s\n' "$*" >>"$MOCK_NODE_LOG"
+fi
+exit 0
+EOF
+  chmod +x "$mock_node_dir/node"
+
+  MOCK_NODE_LOG="$CASE_DIR/node.log" PATH="$mock_node_dir:$PATH" CHROME_USE_MCP_MODE=inspect bash "$wrapper_dir/chrome_devtools_mcp_wrapper.sh" >"$CASE_DIR/wrapper.out" 2>"$CASE_DIR/wrapper.err"
+  local node_args
+  node_args="$(cat "$CASE_DIR/node.log" 2>/dev/null || true)"
+
+  assert_contains "http://127.0.0.1:4321/" "$(cat "$MOCK_OPEN_LOG" 2>/dev/null || true)" "inspect wrapper opens resolved startup URL"
+  assert_contains "--startup-url=http://127.0.0.1:4321/" "$node_args" "inspect wrapper forwards resolved startup URL"
+}
+
 main() {
   test_launches_dedicated_instance
   test_reuses_running_instance_with_new_tab
@@ -377,6 +417,7 @@ main() {
   test_doctor_reports_window_blocker
   test_allows_page_target_fallback_when_window_probe_reports_zero
   test_ignores_renderer_helpers_for_process_ownership
+  test_inspect_wrapper_forwards_resolved_startup_url
 
   if [[ "$failures" -gt 0 ]]; then
     echo "Runtime tests failed with $failures issue(s)." >&2
