@@ -2,4 +2,4 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec node "$SCRIPT_DIR/../../chrome-use/scripts/inspect_capture.mjs" "$@"
+exec node "$SCRIPT_DIR/../../../runtime/chrome-use/scripts/inspect_capture.mjs" "$@"

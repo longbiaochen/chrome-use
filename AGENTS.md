@@ -1,18 +1,24 @@
 # chrome-use Repo Instructions
 
-- This repository is the standalone public home for the `chrome-use` agent skill.
+- This repository is the standalone public home for the `chrome-use` runtime plus its public browser skills.
 - Keep the public packaging cross-agent and cross-platform by default.
 - Treat Codex as the reference client and best-tested adapter, not the only supported client.
-- Keep the canonical public skill payload in [`chrome-use/SKILL.md`](./chrome-use/SKILL.md).
-- Keep Codex-specific metadata optional and isolated under [`chrome-use/agents/openai.yaml`](./chrome-use/agents/openai.yaml).
+- Keep the canonical public skill payloads in:
+  - [`skills/chrome-auth/SKILL.md`](./skills/chrome-auth/SKILL.md)
+  - [`skills/chrome-inspect/SKILL.md`](./skills/chrome-inspect/SKILL.md)
+- Keep Codex-specific metadata optional and isolated under:
+  - [`skills/chrome-auth/agents/openai.yaml`](./skills/chrome-auth/agents/openai.yaml)
+  - [`skills/chrome-inspect/agents/openai.yaml`](./skills/chrome-inspect/agents/openai.yaml)
+- Keep the shared runtime under [`runtime/chrome-use/`](./runtime/chrome-use/); it is internal and must not be packaged as a public skill.
 - For OpenAI, Codex, Apps SDK, or API questions, use the OpenAI developer documentation MCP server first.
 - Prefer client-neutral paths in public docs for installable commands:
   - `~/.agents/skills/chrome-auth`
   - `~/.agents/skills/chrome-inspect`
   - `~/.codex/skills/chrome-auth`
   - `~/.codex/skills/chrome-inspect`
-- `chrome-use` is a shared, non-command helper package.
-- Only two slash commands are surfaced: `/chrome-inspect` and `/chrome-auth`.
+- `chrome-use` is a shared internal runtime, not a public skill or command.
+- Only two public skill names are exposed: `chrome-inspect` and `chrome-auth`.
+- These public skills may be used explicitly or implicitly.
 - `/chrome` and `/inspect` are intentionally unavailable as standalone commands.
 - Public defaults for this repo should remain neutral:
   - profile dir: `~/.chrome-use/agent-profile`
@@ -20,7 +26,7 @@
   - debug endpoint: `http://127.0.0.1:9223`
 - Keep the dedicated profile runtime contract strict: one profile-owner process on `127.0.0.1:9223`, and one dedicated profile window on macOS.
 - For `/chrome-inspect`, resolve startup URL in this order: explicit user URL → `CHROME_INSPECT_PROJECT_ROOT` docs webapp entry → `CHROME_USE_DEFAULT_WEBAPP_URL` → `about:blank`.
-- If `CHROME_INSPECT_AUTO_START_WEBAPP=1` and `CHROME_INSPECT_PROJECT_ROOT` are set, `chrome-use/scripts/open_url.sh` should auto-start the local project web app before attaching Chrome.
+- If `CHROME_INSPECT_AUTO_START_WEBAPP=1` and `CHROME_INSPECT_PROJECT_ROOT` are set, `runtime/chrome-use/scripts/open_url.sh` should auto-start the local project web app before attaching Chrome.
 - On macOS, open or reuse the dedicated Chrome profile in the background so MCP startup does not steal user focus.
 - Use repository checks when touching runtime/packaging behavior: `bash scripts/verify-manifest.sh` and `bash scripts/test-runtime.sh`.
 - Do not claim Windows support unless it has been tested end-to-end.

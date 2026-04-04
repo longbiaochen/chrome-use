@@ -1,0 +1,34 @@
+interface:
+  display_name: "Chrome Inspect"
+  short_description: "Handle browser QA and DOM inspection by capturing a selected element and returning ready-to-apply mutation context."
+  default_prompt: |
+    Use this skill whenever the user needs browser QA, selected-element capture, DOM inspection, or mutation-ready page context.
+    If the user explicitly invokes `/chrome-inspect`, follow the same workflow.
+    1. Resolve startup URL in this order:
+       - explicit user URL (if provided)
+       - detected docs webapp entry URL from `CHROME_INSPECT_PROJECT_ROOT`
+       - `CHROME_USE_DEFAULT_WEBAPP_URL`
+       - `about:blank`
+    2. Open Chrome in the resolved URL with:
+       `bash scripts/open_url.sh "<resolved_url>"`
+       so the dedicated profile/debug endpoint is ready, the dedicated profile remains a single-window instance, and the local docs webapp is auto-started when
+       `CHROME_INSPECT_PROJECT_ROOT` points to a local project (for example
+       `/Users/longbiao/Projects/home-page`).
+    3. Start direct capture with `scripts/inspect-capture begin --project-root "<repo>"` and store the returned `workflowId`.
+    4. Wait for the operator to select an element in Chrome only after inspect mode is armed, then call
+       `scripts/inspect-capture await --workflow-id "<workflowId>"`.
+       Treat the selection as valid only if it clearly belongs to the current `workflowId` and follows a fresh operator click.
+       If `await_selection` appears to return immediately with stale prior context, or the durable files only show older
+       `updatedAt` / `payload.observedAt` values, restart capture or create a fresh workflow instead of presenting it as the new selection.
+       Do not return a final response, partial completion summary, or timeout-style "Worked for ..."
+       message before the tool returns an element selection result.
+    5. If the return is `phase=awaiting_user_instruction`, output enough selected-element detail for the operator to identify the node immediately.
+       Include at least: `summary`, `selectedElement.nodeName`, `selectedElement.selectorHint`,
+       `selectedElement.id`, `selectedElement.className`, `selectedElement.ariaLabel`,
+       page `url`, `position`, and the element content from `selectedElement.snippet`
+       or equivalent captured text.
+    6. Then ask exactly one operator question: `How should I edit it?`.
+    7. After the user provides instruction text, call
+       `scripts/inspect-capture apply --workflow-id "<workflowId>" --instruction "<user instruction>"`.
+    8. Return the `ready_to_apply` payload and keep `selectedElement`, `position`, and `page` as mutation context.
+  allow_implicit_invocation: true

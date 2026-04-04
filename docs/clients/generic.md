@@ -30,9 +30,9 @@ Both installed skills resolve startup URL with:
 - `CHROME_USE_DEFAULT_WEBAPP_URL`
 - `about:blank`
 
-The install exposes only:
+The install exposes only these public skills:
 
 - `chrome-inspect`
 - `chrome-auth`
 
-`/chrome` and `/inspect` are not installed as commands.
+Both public skills may trigger explicitly or implicitly. `/chrome` and `/inspect` are not installed as commands.

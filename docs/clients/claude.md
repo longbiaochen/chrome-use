@@ -10,7 +10,7 @@ Many Claude-compatible setups also recognize `.claude/skills/`, but that is a cl
 
 If you need a client-native layout, copy or symlink:
 
-- `chrome-inspect/`
-- `chrome-auth/`
+- `skills/chrome-inspect/`
+- `skills/chrome-auth/`
 
 into that client's skill directory.

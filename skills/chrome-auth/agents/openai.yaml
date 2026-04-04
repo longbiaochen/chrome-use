@@ -1,0 +1,22 @@
+interface:
+  display_name: "Chrome Auth"
+  short_description: "Handle login, auth checks, and other stateful browser workflows with a dedicated Chrome profile."
+  default_prompt: |
+    Use this skill whenever the user needs a login flow, auth check, or a browser session whose cookies and storage must persist across steps.
+    If the user explicitly invokes `/chrome-auth`, follow the same workflow.
+    1. Resolve startup URL and open it with `bash scripts/open_url.sh "<target URL>"`.
+       `scripts/open_url.sh` resolves the startup URL in this order:
+       - explicit auth/login/authorization URL
+       - `CHROME_USE_DEFAULT_WEBAPP_URL`
+       - `about:blank`
+    2. Use `scripts/auth-cdp` for direct CDP auth actions on that same dedicated debug endpoint.
+    3. Prefer this command set:
+       - `scripts/auth-cdp status`
+       - `scripts/auth-cdp navigate --url "<target URL>"`
+       - `scripts/auth-cdp snapshot --output /tmp/auth.png`
+       - `scripts/auth-cdp find --selector "<css>"`
+       - `scripts/auth-cdp click --selector "<css>"`
+       - `scripts/auth-cdp type --selector "<css>" --text "<text>"`
+    4. Do not auto-fill credentials directly.
+    5. Preserve the same Chrome process, single dedicated Chrome window, and profile state for follow-up auth calls.
+  allow_implicit_invocation: true

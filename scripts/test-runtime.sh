@@ -2,6 +2,8 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RUNTIME_ROOT="$REPO_ROOT/runtime/chrome-use"
+SKILLS_ROOT="$REPO_ROOT/skills"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/chrome-use-runtime-tests.XXXXXX")"
 MOCK_BIN="$TMP_ROOT/bin"
 ORIGINAL_PATH="$PATH"
@@ -195,7 +197,7 @@ setup_case() {
 run_ensure() {
   local output_file="$CASE_DIR/ensure.out"
   local error_file="$CASE_DIR/ensure.err"
-  if bash "$REPO_ROOT/chrome-use/scripts/ensure_profile.sh" "${1:-}" >"$output_file" 2>"$error_file"; then
+  if bash "$RUNTIME_ROOT/scripts/ensure_profile.sh" "${1:-}" >"$output_file" 2>"$error_file"; then
     ENSURE_STATUS=0
   else
     ENSURE_STATUS=$?
@@ -207,7 +209,7 @@ run_ensure() {
 run_doctor() {
   local output_file="$CASE_DIR/doctor.out"
   local error_file="$CASE_DIR/doctor.err"
-  if bash "$REPO_ROOT/chrome-use/scripts/doctor.sh" >"$output_file" 2>"$error_file"; then
+  if bash "$RUNTIME_ROOT/scripts/doctor.sh" >"$output_file" 2>"$error_file"; then
     DOCTOR_STATUS=0
   else
     DOCTOR_STATUS=$?
@@ -365,29 +367,10 @@ EOF
   assert_contains "Profile owner PID(s): 707" "$DOCTOR_STDOUT" "doctor helper process case reports browser root pid"
 }
 
-test_inspect_wrapper_forwards_resolved_startup_url() {
+test_inspect_capture_wrapper_targets_shared_runtime() {
   setup_case
-  local wrapper_dir="$CASE_DIR/wrapper"
   local mock_node_dir="$CASE_DIR/mock-node"
-  mkdir -p "$wrapper_dir"
   mkdir -p "$mock_node_dir"
-  cp "$REPO_ROOT/chrome-use/scripts/chrome_devtools_mcp_wrapper.sh" "$wrapper_dir/chrome_devtools_mcp_wrapper.sh"
-  chmod +x "$wrapper_dir/chrome_devtools_mcp_wrapper.sh"
-  cat >"$wrapper_dir/resolve_startup_url.sh" <<'EOF'
-#!/usr/bin/env bash
-echo "http://127.0.0.1:4321/"
-EOF
-  chmod +x "$wrapper_dir/resolve_startup_url.sh"
-  cat >"$wrapper_dir/open_url.sh" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' "$1" >"${MOCK_OPEN_LOG:?}"
-echo "http://127.0.0.1:9223"
-EOF
-  chmod +x "$wrapper_dir/open_url.sh"
-  cat >"$wrapper_dir/chrome_devtools_inspect_mcp.mjs" <<'EOF'
-#!/usr/bin/env node
-EOF
-  chmod +x "$wrapper_dir/chrome_devtools_inspect_mcp.mjs"
   cat >"$mock_node_dir/node" <<'EOF'
 #!/usr/bin/env bash
 if [[ -n "${MOCK_NODE_LOG:-}" ]]; then
@@ -397,12 +380,31 @@ exit 0
 EOF
   chmod +x "$mock_node_dir/node"
 
-  MOCK_NODE_LOG="$CASE_DIR/node.log" PATH="$mock_node_dir:$PATH" CHROME_USE_MCP_MODE=inspect bash "$wrapper_dir/chrome_devtools_mcp_wrapper.sh" >"$CASE_DIR/wrapper.out" 2>"$CASE_DIR/wrapper.err"
+  MOCK_NODE_LOG="$CASE_DIR/node.log" PATH="$mock_node_dir:$PATH" bash "$SKILLS_ROOT/chrome-inspect/scripts/inspect-capture" begin --project-root "/tmp/project" >"$CASE_DIR/inspect.out" 2>"$CASE_DIR/inspect.err" || true
   local node_args
   node_args="$(cat "$CASE_DIR/node.log" 2>/dev/null || true)"
 
-  assert_contains "http://127.0.0.1:4321/" "$(cat "$MOCK_OPEN_LOG" 2>/dev/null || true)" "inspect wrapper opens resolved startup URL"
-  assert_contains "--startup-url=http://127.0.0.1:4321/" "$node_args" "inspect wrapper forwards resolved startup URL"
+  assert_contains "runtime/chrome-use/scripts/inspect_capture.mjs begin --project-root /tmp/project" "$node_args" "inspect-capture wrapper delegates to shared runtime"
+}
+
+test_auth_cdp_wrapper_targets_shared_runtime() {
+  setup_case
+  local mock_node_dir="$CASE_DIR/mock-node"
+  mkdir -p "$mock_node_dir"
+  cat >"$mock_node_dir/node" <<'EOF'
+#!/usr/bin/env bash
+if [[ -n "${MOCK_NODE_LOG:-}" ]]; then
+  printf '%s\n' "$*" >>"$MOCK_NODE_LOG"
+fi
+exit 0
+EOF
+  chmod +x "$mock_node_dir/node"
+
+  MOCK_NODE_LOG="$CASE_DIR/node.log" PATH="$mock_node_dir:$PATH" bash "$SKILLS_ROOT/chrome-auth/scripts/auth-cdp" status >"$CASE_DIR/auth.out" 2>"$CASE_DIR/auth.err" || true
+  local node_args
+  node_args="$(cat "$CASE_DIR/node.log" 2>/dev/null || true)"
+
+  assert_contains "runtime/chrome-use/scripts/auth_cdp.mjs status" "$node_args" "auth-cdp wrapper delegates to shared runtime"
 }
 
 main() {
@@ -417,7 +419,8 @@ main() {
   test_doctor_reports_window_blocker
   test_allows_page_target_fallback_when_window_probe_reports_zero
   test_ignores_renderer_helpers_for_process_ownership
-  test_inspect_wrapper_forwards_resolved_startup_url
+  test_inspect_capture_wrapper_targets_shared_runtime
+  test_auth_cdp_wrapper_targets_shared_runtime
 
   if [[ "$failures" -gt 0 ]]; then
     echo "Runtime tests failed with $failures issue(s)." >&2
