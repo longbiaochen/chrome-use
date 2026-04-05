@@ -30,6 +30,7 @@
 - On macOS, open or reuse the dedicated Chrome profile in the background so MCP startup does not steal user focus.
 - Use repository checks when touching runtime/packaging behavior: `bash scripts/verify-manifest.sh` and `bash scripts/test-runtime.sh`.
 - Do not claim Windows support unless it has been tested end-to-end.
+- When asked to ship changes from this repo, prefer committing directly on `main`, pushing `main`, and refreshing the install in `~/.agents/skills`.
 - When updating launch messaging, optimize for shareability:
   - lead with the pain point
   - list the 2-3 concrete fixes
