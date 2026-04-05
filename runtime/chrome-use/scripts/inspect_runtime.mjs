@@ -954,7 +954,10 @@ async function setInspectModeForSession(cdp, sessionState, mode) {
   return safeSend(activeCdp, "Overlay.setInspectMode", params, sessionId);
 }
 
-function buildPageSelectionCaptureSource(workflowId, captureToken) {
+function buildPageSelectionCaptureSource(workflowId, captureToken, {
+  mode = "inspect",
+  cancelled = false,
+} = {}) {
   return `(() => {
     const key = "__chromeInspectAgentState";
     const styleId = "chrome-inspect-toolbar-style";
@@ -967,12 +970,12 @@ function buildPageSelectionCaptureSource(workflowId, captureToken) {
     if (!sameWorkflow) {
       state.selected = null;
       state.selectedElement = null;
-      state.cancelled = false;
-      state.mode = "inspect";
+      state.cancelled = ${cancelled ? "true" : "false"};
+      state.mode = ${JSON.stringify(mode)};
       state.armedAt = Date.now();
     } else {
-      state.cancelled = false;
-      state.mode = state.mode || "inspect";
+      state.cancelled = ${cancelled ? "true" : "false"};
+      state.mode = state.mode || ${JSON.stringify(mode)};
       state.armedAt = state.armedAt || Date.now();
     }
 
@@ -1324,9 +1327,9 @@ function buildPageSelectionCaptureSource(workflowId, captureToken) {
   })()`;
 }
 
-async function installPageSelectionCapture(cdp, state, sessionState, workflowId, captureToken) {
+async function installPageSelectionCapture(cdp, state, sessionState, workflowId, captureToken, options = {}) {
   const { activeCdp, sessionId } = getSessionRuntime(sessionState, cdp);
-  const expression = buildPageSelectionCaptureSource(workflowId, captureToken);
+  const expression = buildPageSelectionCaptureSource(workflowId, captureToken, options);
 
   const priorScriptId = state.pageCaptureScriptByTargetId.get(sessionState.targetId);
   if (priorScriptId) {
@@ -1449,25 +1452,15 @@ async function armPageSelectionCapture(cdp, state, workflow) {
   const targetIds = [...state.targetsById.keys()];
   let armedAt = null;
   for (const targetId of targetIds) {
-    const sessionState = state.targetsById.get(targetId);
-    if (!sessionState) {
-      continue;
-    }
     try {
-      const armResult = await installPageSelectionCapture(
-        cdp,
-        state,
-        sessionState,
-        workflowId,
-        workflow.captureToken,
-      );
-      state.captureMetaByTargetId.set(targetId, {
+      const meta = await armCaptureForTarget(cdp, state, targetId, {
         workflowId,
         captureToken: workflow.captureToken,
-        armedAt: armResult.armedAt || timingNow(),
+        mode: "inspect",
+        cancelled: false,
+        reason: "workflow_begin",
       });
-      armedAt = armResult.armedAt || armedAt;
-      logSignal("page_capture_armed", { workflowId, targetId, captureToken: workflow.captureToken });
+      armedAt = meta?.armedAt || armedAt;
     } catch (err) {
       state.lastObservedError = `page capture arm failed for ${targetId}: ${err?.message || err}`;
       logSignal("page_capture_arm_error", { workflowId, targetId, error: state.lastObservedError });
@@ -1944,15 +1937,25 @@ async function awaitWorkflowSelection(state, cdp, workflowId, waitForSelectionMs
     }
 
     let heartbeat = null;
+    let heartbeatTargetId = null;
     for (const sessionState of state.targetsById.values()) {
       const captureState = await readPageCaptureHeartbeat(cdp, sessionState, workflowId);
       if (!captureState) {
         continue;
       }
       heartbeat = captureState;
+      heartbeatTargetId = sessionState.targetId;
       break;
     }
     if (heartbeat) {
+      if (heartbeatTargetId) {
+        updateCaptureMetaForTarget(state, heartbeatTargetId, {
+          workflowId,
+          captureToken: heartbeat.captureToken || state.captureMetaByTargetId.get(heartbeatTargetId)?.captureToken || null,
+          mode: heartbeat.heartbeat?.mode || (heartbeat.cancelled ? "idle" : "inspect"),
+          cancelled: !!heartbeat.cancelled,
+        });
+      }
       workflow = await persistWorkflowState(state.store, state, workflowId, {
         status: "waiting_for_selection",
         phase: "waiting_for_selection",
@@ -2134,6 +2137,7 @@ export async function handleInspectAction(cdp, state, args, messageId) {
   await persistSessionState(state.store, state, { status: "bridge_ready" });
   for (const sessionState of state.targetsById.values()) {
     state.captureMetaByTargetId.delete(sessionState.targetId);
+    state.rearmPendingByTargetId.delete(sessionState.targetId);
     await clearPageSelectionCapture(cdp, state, sessionState);
   }
   logSignal("instruction_recorded", { workflowId, sequence: updated.sequence });
@@ -2179,6 +2183,14 @@ async function recordSelectionForWorkflow(cdp, state, selection) {
   });
 
   if (workflowId) {
+    if (selection.targetId) {
+      updateCaptureMetaForTarget(state, selection.targetId, {
+        workflowId,
+        captureToken: payload.captureToken || selection.captureToken || null,
+        mode: "idle",
+        cancelled: false,
+      });
+    }
     const workflow = await persistWorkflowState(state.store, state, workflowId, {
       status: "selection_received",
       phase: "selection_received",
@@ -2297,18 +2309,14 @@ async function attachPageTarget(cdp, targetInfo, state) {
   state.targetsBySessionId.set(sessionKey, targetInfo.targetId);
   logSignal("target_attached", { targetId: targetInfo.targetId, direct: useDirectSession });
 
-  if (overlayEnabled) {
-    const sessionState = state.targetsById.get(targetInfo.targetId);
-    sessionCdp.onEvent((message) => {
-      if (useDirectSession) {
-        if (message.method !== "Overlay.inspectNodeRequested") {
-          return;
-        }
-      } else if (message.sessionId !== sessionId) {
-        return;
-      }
+  const sessionState = state.targetsById.get(targetInfo.targetId);
+  sessionCdp.onEvent((message) => {
+    if (!useDirectSession && message.sessionId !== sessionId) {
+      return;
+    }
 
-      if (message.method !== "Overlay.inspectNodeRequested") {
+    if (message.method === "Overlay.inspectNodeRequested") {
+      if (!overlayEnabled) {
         return;
       }
       state.lastSelectionEvent = {
@@ -2320,29 +2328,47 @@ async function attachPageTarget(cdp, targetInfo, state) {
         captureToken: state.captureMetaByTargetId.get(targetInfo.targetId)?.captureToken || null,
       };
       void queueSelectionRecord(cdp, state, state.lastSelectionEvent);
-    });
-  }
+      return;
+    }
+
+    if (message.method === "Page.frameNavigated") {
+      const frame = message.params?.frame || null;
+      if (!frame) {
+        return;
+      }
+      const isTopFrame = !frame.parentId || frame.id === sessionState.frameId || !sessionState.frameId;
+      if (!isTopFrame) {
+        return;
+      }
+      sessionState.frameId = frame.id || sessionState.frameId || null;
+      void rearmCaptureForTargetIfActive(cdp, state, targetInfo.targetId, "frame_navigated");
+      return;
+    }
+
+    if (message.method === "Page.loadEventFired") {
+      void rearmCaptureForTargetIfActive(cdp, state, targetInfo.targetId, "load_event_fired");
+      return;
+    }
+
+    if (message.method === "Page.navigatedWithinDocument") {
+      const frameId = message.params?.frameId || null;
+      if (frameId && sessionState.frameId && frameId !== sessionState.frameId) {
+        return;
+      }
+      void rearmCaptureForTargetIfActive(cdp, state, targetInfo.targetId, "same_document_navigation");
+    }
+  });
 
   if (state.activeWorkflowId) {
     try {
       const workflow = await readWorkflow(state.store, state.activeWorkflowId);
       if (workflow?.captureToken) {
-        const armResult = await installPageSelectionCapture(
-          cdp,
-          state,
-          state.targetsById.get(targetInfo.targetId),
-          state.activeWorkflowId,
-          workflow.captureToken,
-        );
-        state.captureMetaByTargetId.set(targetInfo.targetId, {
+        await armCaptureForTarget(cdp, state, targetInfo.targetId, {
           workflowId: state.activeWorkflowId,
           captureToken: workflow.captureToken,
-          armedAt: armResult.armedAt || workflow.armedAt || timingNow(),
-        });
-        logSignal("page_capture_armed", {
-          workflowId: state.activeWorkflowId,
-          targetId: targetInfo.targetId,
-          captureToken: workflow.captureToken,
+          mode: "inspect",
+          cancelled: false,
+          reason: "target_attached",
         });
       }
     } catch (err) {
@@ -2409,6 +2435,89 @@ function updateTargetInfo(state, info) {
   });
 }
 
+function updateCaptureMetaForTarget(state, targetId, patch) {
+  if (!targetId) {
+    return null;
+  }
+  const previous = state.captureMetaByTargetId.get(targetId) || {};
+  const next = {
+    ...previous,
+    ...patch,
+  };
+  state.captureMetaByTargetId.set(targetId, next);
+  return next;
+}
+
+function getActiveCaptureMetaForTarget(state, targetId) {
+  if (!targetId || !state.activeWorkflowId) {
+    return null;
+  }
+  const meta = state.captureMetaByTargetId.get(targetId);
+  if (!meta || meta.workflowId !== state.activeWorkflowId || !meta.captureToken) {
+    return null;
+  }
+  return meta;
+}
+
+async function armCaptureForTarget(cdp, state, targetId, {
+  workflowId,
+  captureToken,
+  mode = "inspect",
+  cancelled = false,
+  reason = "manual",
+} = {}) {
+  const sessionState = state.targetsById.get(targetId);
+  if (!sessionState || !workflowId || !captureToken) {
+    return null;
+  }
+  const armResult = await installPageSelectionCapture(
+    cdp,
+    state,
+    sessionState,
+    workflowId,
+    captureToken,
+    { mode, cancelled },
+  );
+  const meta = updateCaptureMetaForTarget(state, targetId, {
+    workflowId,
+    captureToken,
+    armedAt: armResult.armedAt || timingNow(),
+    mode,
+    cancelled,
+  });
+  logSignal("page_capture_armed", {
+    workflowId,
+    targetId,
+    captureToken,
+    reason,
+    mode,
+    cancelled,
+  });
+  return meta;
+}
+
+async function rearmCaptureForTargetIfActive(cdp, state, targetId, reason) {
+  const meta = getActiveCaptureMetaForTarget(state, targetId);
+  if (!meta) {
+    return null;
+  }
+  const existing = state.rearmPendingByTargetId.get(targetId);
+  if (existing) {
+    return existing;
+  }
+  const pending = armCaptureForTarget(cdp, state, targetId, {
+    workflowId: meta.workflowId,
+    captureToken: meta.captureToken,
+    mode: meta.mode || "inspect",
+    cancelled: !!meta.cancelled,
+    reason,
+  }).finally(() => {
+    state.rearmPendingByTargetId.delete(targetId);
+  });
+  state.rearmPendingByTargetId.set(targetId, pending);
+  return pending;
+}
+
 function detachTrackedTarget(state, targetId, rootCdp) {
   if (!targetId) {
     return;
@@ -2422,6 +2531,7 @@ function detachTrackedTarget(state, targetId, rootCdp) {
   state.captureMetaByTargetId.delete(targetId);
   state.pageCaptureScriptByTargetId.delete(targetId);
   state.attachingTargetIds.delete(targetId);
+  state.rearmPendingByTargetId.delete(targetId);
   if (sessionState?.sessionId) {
     state.targetsBySessionId.delete(sessionState.sessionId);
   }
@@ -2509,6 +2619,7 @@ export async function connectInspectRuntime({
     domReadyBySessionKey: new Set(),
     captureMetaByTargetId: new Map(),
     pageCaptureScriptByTargetId: new Map(),
+    rearmPendingByTargetId: new Map(),
     store: createInspectStore({
       debugHost: browserUrl.hostname,
       debugPort: browserUrl.port || "80",

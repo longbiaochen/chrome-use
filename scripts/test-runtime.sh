@@ -407,6 +407,18 @@ EOF
   assert_contains "runtime/chrome-use/scripts/auth_cdp.mjs status" "$node_args" "auth-cdp wrapper delegates to shared runtime"
 }
 
+test_inspect_runtime_source_tracks_navigation_rearm() {
+  local runtime_source
+  runtime_source="$(cat "$RUNTIME_ROOT/scripts/inspect_runtime.mjs")"
+
+  assert_contains "Page.addScriptToEvaluateOnNewDocument" "$runtime_source" "inspect runtime registers new-document bootstrap"
+  assert_contains "Page.frameNavigated" "$runtime_source" "inspect runtime listens for frame navigation"
+  assert_contains "Page.loadEventFired" "$runtime_source" "inspect runtime listens for load completion"
+  assert_contains "Page.navigatedWithinDocument" "$runtime_source" "inspect runtime listens for same-document navigation"
+  assert_contains "rearmCaptureForTargetIfActive" "$runtime_source" "inspect runtime exposes lifecycle rearm helper"
+  assert_contains "Target.targetCreated" "$runtime_source" "inspect runtime attaches new page targets during capture"
+}
+
 main() {
   test_launches_dedicated_instance
   test_reuses_running_instance_with_new_tab
@@ -421,6 +433,7 @@ main() {
   test_ignores_renderer_helpers_for_process_ownership
   test_inspect_capture_wrapper_targets_shared_runtime
   test_auth_cdp_wrapper_targets_shared_runtime
+  test_inspect_runtime_source_tracks_navigation_rearm
 
   if [[ "$failures" -gt 0 ]]; then
     echo "Runtime tests failed with $failures issue(s)." >&2
