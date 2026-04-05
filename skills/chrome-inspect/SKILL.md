@@ -23,7 +23,7 @@ Use this skill when an agent needs deterministic, inspect-first Chrome DOM work 
    - or the one-shot path: `scripts/inspect_select_element.sh "<repo>"`
 5. Ensure the session is attached to the dedicated debug endpoint and that the dedicated profile still has exactly one Chrome window.
 6. The direct inspect runtime should pass the startup URL into the shared runtime so capture prioritizes the freshly opened target instead of attaching unrelated tabs on the same debug endpoint.
-7. Confirm inspect mode is armed, then have the user select an element in Chrome and wait for `await` or `once` to return the normalized selection JSON.
+7. Confirm inspect mode is armed, then have the user use the persistent page toolbar to stay in `Inspect` mode or `Exit`, click an element in Chrome, and wait for `await` or `once` to return the normalized selection JSON.
 8. Treat the selection as valid only if it is clearly for the current `workflowId` and follows a fresh operator click for this capture cycle.
    If `await_selection` appears to return immediately with stale prior context, or the durable files only show an older `updatedAt` / `payload.observedAt`, do not present it as the new selection. Restart capture or create a fresh workflow and retry.
 9. Do not return a final response, a completion summary, or a "Worked for ..." timeout-style message before receiving a fresh `phase=awaiting_user_instruction` or equivalent fresh `selection_received` payload for the current capture cycle.

@@ -51,7 +51,7 @@ Recommended verification for public skills:
    Reuse keeps the dedicated `agent-profile` on a single Chrome window and opens a new tab on that running instance.
 4. The runtime should prioritize the freshly opened target instead of attaching unrelated tabs.
 5. The client calls `scripts/inspect-capture begin --project-root "<repo>"` and stores `workflowId`.
-6. In Chrome, click the target element only after inspect mode is armed.
+6. In Chrome, use the persistent page toolbar to stay in `Inspect` mode or `Exit`, then click the target element only after inspect mode is armed.
 7. The client calls `scripts/inspect-capture await --workflow-id "<workflowId>"`.
 8. Treat the result as valid only if it belongs to the current `workflowId` and follows a fresh click for the current capture cycle.
    If `await_selection` appears to return immediately with stale prior context, restart capture instead of presenting it as the new selection.

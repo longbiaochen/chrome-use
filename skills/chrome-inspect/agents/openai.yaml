@@ -15,7 +15,7 @@ interface:
        `CHROME_INSPECT_PROJECT_ROOT` points to a local project (for example
        `/Users/longbiao/Projects/home-page`).
     3. Start direct capture with `scripts/inspect-capture begin --project-root "<repo>"` and store the returned `workflowId`.
-    4. Wait for the operator to select an element in Chrome only after inspect mode is armed, then call
+    4. Wait for the operator to use the persistent page toolbar to stay in `Inspect` mode or `Exit`, then select an element in Chrome only after inspect mode is armed, and call
        `scripts/inspect-capture await --workflow-id "<workflowId>"`.
        Treat the selection as valid only if it clearly belongs to the current `workflowId` and follows a fresh operator click.
        If `await_selection` appears to return immediately with stale prior context, or the durable files only show older

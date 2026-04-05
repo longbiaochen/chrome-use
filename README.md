@@ -141,7 +141,7 @@ For `/chrome-inspect` default flow, send:
 2. Let `scripts/open_url.sh` open Chrome and auto-start the local project web app first when `CHROME_INSPECT_PROJECT_ROOT` is configured.
    If the dedicated profile is already running, the command reuses it by opening a new tab there instead of creating another dedicated window.
 3. Start capture with `scripts/inspect-capture begin --project-root "<repo>"` and store the returned `workflowId`.
-4. Confirm inspect mode is armed, then select the target element in Chrome inspector flow.
+4. Confirm inspect mode is armed, then use the page toolbar to stay in `Inspect` mode or `Exit`, and click the target element in Chrome.
 5. Call `scripts/inspect-capture await --workflow-id "<workflowId>"`.
 6. Treat the result as valid only if it belongs to the current `workflowId` and follows a fresh click for this capture cycle.
    If `await_selection` appears to return immediately with stale prior context, restart capture instead of presenting it as the new selection.

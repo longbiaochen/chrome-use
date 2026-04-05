@@ -954,10 +954,11 @@ async function setInspectModeForSession(cdp, sessionState, mode) {
   return safeSend(activeCdp, "Overlay.setInspectMode", params, sessionId);
 }
 
-async function installPageSelectionCapture(cdp, state, sessionState, workflowId, captureToken) {
-  const { activeCdp, sessionId } = getSessionRuntime(sessionState, cdp);
-  const expression = `(() => {
+function buildPageSelectionCaptureSource(workflowId, captureToken) {
+  return `(() => {
     const key = "__chromeInspectAgentState";
+    const styleId = "chrome-inspect-toolbar-style";
+    const toolbarSelector = "[data-chrome-inspect-toolbar]";
     const state = window[key] || (window[key] = {});
     const sameWorkflow = state.workflowId === ${JSON.stringify(workflowId)} &&
       state.captureToken === ${JSON.stringify(captureToken)};
@@ -967,154 +968,381 @@ async function installPageSelectionCapture(cdp, state, sessionState, workflowId,
       state.selected = null;
       state.selectedElement = null;
       state.cancelled = false;
+      state.mode = "inspect";
       state.armedAt = Date.now();
     } else {
       state.cancelled = false;
+      state.mode = state.mode || "inspect";
       state.armedAt = state.armedAt || Date.now();
     }
 
-    if (state.listenerInstalled) {
+    if (typeof state.cleanup === "function") {
+      state.cleanup();
+    }
+
+    state.highlighted = null;
+    state.previousOutline = "";
+    state.previousOutlineOffset = "";
+    state.toolbar = null;
+    state.toolbarStatus = null;
+    state.toolbarInspectButton = null;
+    state.toolbarExitButton = null;
+    state.styleElement = null;
+    state.heartbeatTimer = null;
+    state.toolbarObserver = null;
+    state.domReadyHandler = null;
+    state.handleMove = null;
+    state.handleClick = null;
+    state.handleInspectClick = null;
+    state.handleExitClick = null;
+    state.previousCursor = document.documentElement.style.cursor || "";
+    state.listenerInstalled = false;
+
+    state.removeHighlight = () => {
       if (state.highlighted) {
         state.highlighted.style.outline = state.previousOutline || "";
         state.highlighted.style.outlineOffset = state.previousOutlineOffset || "";
       }
-      if (state.handleMove) document.removeEventListener("mousemove", state.handleMove, true);
-      if (state.handleClick) document.removeEventListener("click", state.handleClick, true);
-      if (state.handleKeydown) document.removeEventListener("keydown", state.handleKeydown, true);
+      state.highlighted = null;
+      state.previousOutline = "";
+      state.previousOutlineOffset = "";
+    };
+
+    state.ensureStyle = () => {
+      let style = document.getElementById(styleId);
+      if (!style) {
+        style = document.createElement("style");
+        style.id = styleId;
+        style.textContent = \`
+[data-chrome-inspect-toolbar] {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 2147483647;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 240px;
+  max-width: min(340px, calc(100vw - 24px));
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(18, 18, 18, 0.94);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.34);
+  font: 500 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  backdrop-filter: blur(14px);
+}
+[data-chrome-inspect-toolbar] [data-role="label"] {
+  flex: 1;
+  min-width: 0;
+}
+[data-chrome-inspect-toolbar] [data-role="title"] {
+  display: block;
+  margin-bottom: 3px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.58);
+}
+[data-chrome-inspect-toolbar] [data-role="status"] {
+  display: block;
+  color: rgba(255, 255, 255, 0.95);
+}
+[data-chrome-inspect-toolbar] [data-role="actions"] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+[data-chrome-inspect-toolbar] button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 42px;
+  height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 10px;
+  cursor: pointer;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+  transition: transform 120ms ease, background 120ms ease;
+}
+[data-chrome-inspect-toolbar] button:hover {
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.14);
+}
+[data-chrome-inspect-toolbar] button[data-active="true"] {
+  background: #ff6600;
+}
+[data-chrome-inspect-toolbar] button[data-chrome-inspect-action="exit"] {
+  background: rgba(204, 51, 68, 0.22);
+}
+[data-chrome-inspect-toolbar] button svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+\`;
+        (document.head || document.documentElement).appendChild(style);
+      }
+      state.styleElement = style;
+    };
+
+    state.isToolbarElement = (node) => {
+      return node instanceof Element && !!node.closest(toolbarSelector);
+    };
+
+    state.updateToolbar = () => {
+      if (!state.toolbar || !state.toolbar.isConnected) {
+        state.ensureToolbar();
+      }
+      if (!state.toolbar) return;
+      if (state.toolbarStatus) {
+        if (state.selected) {
+          state.toolbarStatus.textContent = "Element selected. Return to the agent for the next step.";
+        } else if (state.cancelled || state.mode !== "inspect") {
+          state.toolbarStatus.textContent = "Inspect mode exited. Start a new capture when ready.";
+        } else {
+          state.toolbarStatus.textContent = "Inspect mode is active. Click an element to capture it.";
+        }
+      }
+      if (state.toolbarInspectButton) {
+        state.toolbarInspectButton.dataset.active = state.mode === "inspect" ? "true" : "false";
+      }
+    };
+
+    state.updateHeartbeat = () => {
+      state.heartbeat = {
+        at: Date.now(),
+        workflowId: state.workflowId || null,
+        captureToken: state.captureToken || null,
+        hoveredTagName: state.highlighted ? state.highlighted.tagName : null,
+        hoveredId: state.highlighted && state.highlighted.id ? state.highlighted.id : null,
+        hoveredClassName: state.highlighted && typeof state.highlighted.className === "string"
+          ? state.highlighted.className
+          : null,
+        selected: state.selected || null,
+        cancelled: !!state.cancelled,
+        mode: state.mode || "idle",
+      };
+    };
+
+    state.ensureToolbar = () => {
+      state.ensureStyle();
+      let toolbar = document.querySelector(toolbarSelector);
+      if (!toolbar) {
+        toolbar = document.createElement("div");
+        toolbar.setAttribute("data-chrome-inspect-toolbar", "true");
+        toolbar.innerHTML = \`
+          <div data-role="label">
+            <span data-role="title">Chrome Inspect</span>
+            <span data-role="status"></span>
+          </div>
+          <div data-role="actions">
+            <button type="button" data-chrome-inspect-action="inspect" aria-label="Inspect element">
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <circle cx="7" cy="7" r="4.25"></circle>
+                <path d="M10.5 10.5L14 14"></path>
+              </svg>
+              <span>Inspect</span>
+            </button>
+            <button type="button" data-chrome-inspect-action="exit" aria-label="Exit inspect mode">
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M4 4L12 12"></path>
+                <path d="M12 4L4 12"></path>
+              </svg>
+              <span>Exit</span>
+            </button>
+          </div>
+        \`;
+        (document.body || document.documentElement).appendChild(toolbar);
+      }
+      state.toolbar = toolbar;
+      state.toolbarStatus = toolbar.querySelector('[data-role="status"]');
+      state.toolbarInspectButton = toolbar.querySelector('button[data-chrome-inspect-action="inspect"]');
+      state.toolbarExitButton = toolbar.querySelector('button[data-chrome-inspect-action="exit"]');
+      if (state.toolbarInspectButton && !state.toolbarInspectButton.__chromeInspectBound) {
+        state.handleInspectClick = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          state.cancelled = false;
+          state.selected = null;
+          state.selectedElement = null;
+          state.mode = "inspect";
+          state.applyMode();
+          state.updateToolbar();
+          state.updateHeartbeat();
+        };
+        state.toolbarInspectButton.addEventListener("click", state.handleInspectClick, true);
+        state.toolbarInspectButton.__chromeInspectBound = true;
+      }
+      if (state.toolbarExitButton && !state.toolbarExitButton.__chromeInspectBound) {
+        state.handleExitClick = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          state.cancelled = true;
+          state.selected = null;
+          state.selectedElement = null;
+          state.mode = "idle";
+          state.applyMode();
+          state.updateToolbar();
+          state.updateHeartbeat();
+        };
+        state.toolbarExitButton.addEventListener("click", state.handleExitClick, true);
+        state.toolbarExitButton.__chromeInspectBound = true;
+      }
+      state.updateToolbar();
+      return toolbar;
+    };
+
+    state.handleMove = (event) => {
+      if (state.mode !== "inspect") return;
+      const el = event.target instanceof Element ? event.target : null;
+      if (!el || state.isToolbarElement(el)) return;
+      if (state.highlighted && state.highlighted !== el) {
+        state.highlighted.style.outline = state.previousOutline;
+        state.highlighted.style.outlineOffset = state.previousOutlineOffset;
+      }
+      if (state.highlighted !== el) {
+        state.previousOutline = el.style.outline || "";
+        state.previousOutlineOffset = el.style.outlineOffset || "";
+      }
+      state.highlighted = el;
+      el.style.outline = "2px solid #ff6600";
+      el.style.outlineOffset = "2px";
+      state.updateHeartbeat();
+    };
+
+    state.handleClick = (event) => {
+      if (state.mode !== "inspect") return;
+      const el = event.target instanceof Element ? event.target : null;
+      if (!el || state.isToolbarElement(el)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (typeof event.stopImmediatePropagation === "function") {
+        event.stopImmediatePropagation();
+      }
+      state.cancelled = false;
+      state.selectedElement = el;
+      state.selected = {
+        workflowId: state.workflowId,
+        captureToken: state.captureToken,
+        at: Date.now(),
+        tagName: el.tagName,
+        id: el.id || null,
+        className: typeof el.className === "string" ? el.className : null,
+        clientX: typeof event.clientX === "number" ? event.clientX : null,
+        clientY: typeof event.clientY === "number" ? event.clientY : null
+      };
+      state.mode = "idle";
+      state.applyMode();
+      state.updateToolbar();
+      state.updateHeartbeat();
+    };
+
+    state.applyMode = () => {
+      const root = document.documentElement;
+      if (state.mode === "inspect") {
+        root.style.cursor = "crosshair";
+        if (!state.listenerInstalled) {
+          document.addEventListener("mousemove", state.handleMove, true);
+          document.addEventListener("click", state.handleClick, true);
+          state.listenerInstalled = true;
+        }
+      } else {
+        root.style.cursor = state.previousCursor || "";
+        if (state.listenerInstalled) {
+          document.removeEventListener("mousemove", state.handleMove, true);
+          document.removeEventListener("click", state.handleClick, true);
+          state.listenerInstalled = false;
+        }
+        state.removeHighlight();
+      }
+    };
+
+    state.ensureToolbarMounted = () => {
+      state.ensureToolbar();
+      if (!state.toolbarObserver) {
+        state.toolbarObserver = new MutationObserver(() => {
+          if (!state.toolbar || !state.toolbar.isConnected) {
+            state.ensureToolbar();
+          }
+        });
+        state.toolbarObserver.observe(document.documentElement, { childList: true, subtree: true });
+      }
+    };
+
+    state.mount = () => {
+      state.ensureToolbarMounted();
+      state.applyMode();
+      state.updateToolbar();
+      state.updateHeartbeat();
+    };
+
+    state.cleanup = () => {
+      if (state.listenerInstalled) {
+        document.removeEventListener("mousemove", state.handleMove, true);
+        document.removeEventListener("click", state.handleClick, true);
+      }
+      if (state.toolbarInspectButton && state.handleInspectClick) {
+        state.toolbarInspectButton.removeEventListener("click", state.handleInspectClick, true);
+      }
+      if (state.toolbarExitButton && state.handleExitClick) {
+        state.toolbarExitButton.removeEventListener("click", state.handleExitClick, true);
+      }
       if (state.heartbeatTimer) window.clearInterval(state.heartbeatTimer);
-      if (state.banner && state.banner.isConnected) state.banner.remove();
+      if (state.toolbarObserver) state.toolbarObserver.disconnect();
+      if (state.domReadyHandler) document.removeEventListener("DOMContentLoaded", state.domReadyHandler);
+      state.removeHighlight();
+      if (state.toolbar && state.toolbar.isConnected) state.toolbar.remove();
+      if (state.styleElement && state.styleElement.isConnected) state.styleElement.remove();
+      document.documentElement.style.cursor = state.previousCursor || "";
       state.listenerInstalled = false;
-      state.handleMove = null;
-      state.handleClick = null;
-      state.handleKeydown = null;
+      state.toolbar = null;
+      state.toolbarObserver = null;
       state.heartbeatTimer = null;
-      state.banner = null;
-      state.highlighted = null;
-      state.previousOutline = "";
-      state.previousOutlineOffset = "";
-    }
+      state.styleElement = null;
+      state.domReadyHandler = null;
+    };
 
-    if (!state.listenerInstalled) {
-      state.listenerInstalled = true;
-      state.previousCursor = document.documentElement.style.cursor || "";
-      state.highlighted = null;
-      state.previousOutline = "";
-      state.previousOutlineOffset = "";
-      state.banner = null;
-      state.heartbeatTimer = null;
-
-      state.renderBanner = (message, accent = "#ff6600") => {
-        let banner = state.banner;
-        if (!banner || !banner.isConnected) {
-          banner = document.createElement("div");
-          banner.setAttribute("data-chrome-inspect-banner", "true");
-          banner.style.position = "fixed";
-          banner.style.top = "16px";
-          banner.style.right = "16px";
-          banner.style.zIndex = "2147483647";
-          banner.style.maxWidth = "360px";
-          banner.style.padding = "12px 14px";
-          banner.style.borderRadius = "12px";
-          banner.style.background = "rgba(18, 18, 18, 0.92)";
-          banner.style.color = "#fff";
-          banner.style.font = "600 13px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
-          banner.style.boxShadow = "0 12px 36px rgba(0,0,0,0.35)";
-          banner.style.border = "2px solid " + accent;
-          banner.style.pointerEvents = "none";
-          banner.style.whiteSpace = "pre-wrap";
-          document.documentElement.appendChild(banner);
-          state.banner = banner;
-        }
-        banner.style.borderColor = accent;
-        banner.textContent = message;
-      };
-
-      state.updateHeartbeat = () => {
-        const current = window[key];
-        if (!current) return;
-        current.heartbeat = {
-          at: Date.now(),
-          workflowId: current.workflowId || null,
-          captureToken: current.captureToken || null,
-          hoveredTagName: current.highlighted ? current.highlighted.tagName : null,
-          hoveredId: current.highlighted && current.highlighted.id ? current.highlighted.id : null,
-          hoveredClassName: current.highlighted && typeof current.highlighted.className === "string"
-            ? current.highlighted.className
-            : null,
-          selected: current.selected || null,
-          cancelled: !!current.cancelled
-        };
-      };
-
-      state.handleMove = (event) => {
-        const el = event.target instanceof Element ? event.target : null;
-        if (!el) return;
-        if (state.highlighted && state.highlighted !== el) {
-          state.highlighted.style.outline = state.previousOutline;
-          state.highlighted.style.outlineOffset = state.previousOutlineOffset;
-        }
-        if (state.highlighted !== el) {
-          state.previousOutline = el.style.outline || "";
-          state.previousOutlineOffset = el.style.outlineOffset || "";
-        }
-        state.highlighted = el;
-        el.style.outline = "2px solid #ff6600";
-        el.style.outlineOffset = "2px";
-        state.updateHeartbeat();
-      };
-
-      state.handleClick = (event) => {
-        const current = window[key];
-        if (!current || !current.workflowId) return;
-        const el = event.target instanceof Element ? event.target : null;
-        if (!el) return;
-        event.preventDefault();
-        event.stopPropagation();
-        if (typeof event.stopImmediatePropagation === "function") {
-          event.stopImmediatePropagation();
-        }
-        current.selectedElement = el;
-        current.selected = {
-          workflowId: current.workflowId,
-          captureToken: current.captureToken,
-          at: Date.now(),
-          tagName: el.tagName,
-          id: el.id || null,
-          className: typeof el.className === "string" ? el.className : null,
-          clientX: typeof event.clientX === "number" ? event.clientX : null,
-          clientY: typeof event.clientY === "number" ? event.clientY : null
-        };
-        current.updateHeartbeat();
-        current.renderBanner("Element selected. Return to the agent for the next step.", "#1a9c5a");
-      };
-
-      state.handleKeydown = (event) => {
-        const current = window[key];
-        if (!current) return;
-        if (event.key === "Escape") {
-          current.cancelled = true;
-          current.selected = null;
-          current.selectedElement = null;
-          current.updateHeartbeat();
-          current.renderBanner("Selection cancelled. Start capture again when ready.", "#cc3344");
-        }
-      };
-
-      document.addEventListener("mousemove", state.handleMove, true);
-      document.addEventListener("click", state.handleClick, true);
-      document.addEventListener("keydown", state.handleKeydown, true);
-      state.heartbeatTimer = window.setInterval(() => state.updateHeartbeat(), 1000);
-    }
-
-    document.documentElement.style.cursor = "crosshair";
-    if (state.selected) {
-      state.renderBanner("Element selected. Return to the agent for the next step.", "#1a9c5a");
+    if (document.readyState === "loading") {
+      state.domReadyHandler = () => state.mount();
+      document.addEventListener("DOMContentLoaded", state.domReadyHandler, { once: true });
     } else {
-      state.renderBanner("Chrome Inspect is armed. Click any element on the page to select it.\\nPress Esc to cancel.", "#ff6600");
+      state.mount();
     }
+
+    state.heartbeatTimer = window.setInterval(() => state.updateHeartbeat(), 1000);
     state.updateHeartbeat();
     return { workflowId: state.workflowId, captureToken: state.captureToken, armedAt: state.armedAt };
   })()`;
+}
+
+async function installPageSelectionCapture(cdp, state, sessionState, workflowId, captureToken) {
+  const { activeCdp, sessionId } = getSessionRuntime(sessionState, cdp);
+  const expression = buildPageSelectionCaptureSource(workflowId, captureToken);
+
+  const priorScriptId = state.pageCaptureScriptByTargetId.get(sessionState.targetId);
+  if (priorScriptId) {
+    await safeSend(activeCdp, "Page.removeScriptToEvaluateOnNewDocument", { identifier: priorScriptId }, sessionId);
+    state.pageCaptureScriptByTargetId.delete(sessionState.targetId);
+  }
+
+  const bootstrapResult = await safeSend(
+    activeCdp,
+    "Page.addScriptToEvaluateOnNewDocument",
+    { source: expression },
+    sessionId,
+  );
+  if (bootstrapResult.ok && bootstrapResult.result?.identifier) {
+    state.pageCaptureScriptByTargetId.set(sessionState.targetId, bootstrapResult.result.identifier);
+  }
 
   const armedResult = await activeCdp.send(
     "Runtime.evaluate",
@@ -1143,21 +1371,19 @@ async function installPageSelectionCapture(cdp, state, sessionState, workflowId,
   };
 }
 
-async function clearPageSelectionCapture(cdp, sessionState) {
+async function clearPageSelectionCapture(cdp, state, sessionState) {
   const { activeCdp, sessionId } = getSessionRuntime(sessionState, cdp);
+  const scriptId = state.pageCaptureScriptByTargetId.get(sessionState.targetId);
+  if (scriptId) {
+    await safeSend(activeCdp, "Page.removeScriptToEvaluateOnNewDocument", { identifier: scriptId }, sessionId);
+    state.pageCaptureScriptByTargetId.delete(sessionState.targetId);
+  }
   const expression = `(() => {
     const state = window.__chromeInspectAgentState;
     if (!state) return false;
-    if (state.highlighted) {
-      state.highlighted.style.outline = state.previousOutline || "";
-      state.highlighted.style.outlineOffset = state.previousOutlineOffset || "";
+    if (typeof state.cleanup === "function") {
+      state.cleanup();
     }
-    if (state.handleMove) document.removeEventListener("mousemove", state.handleMove, true);
-    if (state.handleClick) document.removeEventListener("click", state.handleClick, true);
-    if (state.handleKeydown) document.removeEventListener("keydown", state.handleKeydown, true);
-    if (state.heartbeatTimer) window.clearInterval(state.heartbeatTimer);
-    if (state.banner && state.banner.isConnected) state.banner.remove();
-    document.documentElement.style.cursor = state.previousCursor || "";
     delete window.__chromeInspectAgentState;
     return true;
   })()`;
@@ -1192,9 +1418,13 @@ export async function reflectSelectionOnPage(cdp, sessionState, workflowId, payl
     const state = window.__chromeInspectAgentState;
     if (!state || state.workflowId !== ${JSON.stringify(workflowId)}) return false;
     state.cancelled = false;
+    state.mode = "idle";
     state.selected = ${JSON.stringify(selected)};
-    if (typeof state.renderBanner === "function") {
-      state.renderBanner("Element selected. Return to the agent for the next step.", "#1a9c5a");
+    if (typeof state.applyMode === "function") {
+      state.applyMode();
+    }
+    if (typeof state.updateToolbar === "function") {
+      state.updateToolbar();
     }
     if (typeof state.updateHeartbeat === "function") {
       state.updateHeartbeat();
@@ -1276,7 +1506,7 @@ async function resolveSelectionByPageClick(cdp, state, sessionState, pageInfo, w
     return null;
   }
   if (meta.cancelled) {
-    throw new Error("Page selection was cancelled with Escape. Start capture again to select an element.");
+    throw new Error("Page selection was cancelled from the inspect toolbar. Start capture again to select an element.");
   }
 
   let nodeId = null;
@@ -1904,7 +2134,7 @@ export async function handleInspectAction(cdp, state, args, messageId) {
   await persistSessionState(state.store, state, { status: "bridge_ready" });
   for (const sessionState of state.targetsById.values()) {
     state.captureMetaByTargetId.delete(sessionState.targetId);
-    await clearPageSelectionCapture(cdp, sessionState);
+    await clearPageSelectionCapture(cdp, state, sessionState);
   }
   logSignal("instruction_recorded", { workflowId, sequence: updated.sequence });
 
@@ -2179,6 +2409,42 @@ function updateTargetInfo(state, info) {
   });
 }
 
+function detachTrackedTarget(state, targetId, rootCdp) {
+  if (!targetId) {
+    return;
+  }
+  const sessionState = state.targetsById.get(targetId);
+  if (sessionState?.cdp && sessionState.cdp !== rootCdp && !sessionState.cdp.isClosed()) {
+    sessionState.cdp.close();
+  }
+  state.targetsById.delete(targetId);
+  state.targetInfosByTargetId.delete(targetId);
+  state.captureMetaByTargetId.delete(targetId);
+  state.pageCaptureScriptByTargetId.delete(targetId);
+  state.attachingTargetIds.delete(targetId);
+  if (sessionState?.sessionId) {
+    state.targetsBySessionId.delete(sessionState.sessionId);
+  }
+}
+
+async function attachTargetIfNeeded(cdp, state, info) {
+  if (!info?.targetId || info.type !== "page") {
+    return;
+  }
+  updateTargetInfo(state, info);
+  if (state.targetsById.has(info.targetId) || state.attachingTargetIds.has(info.targetId)) {
+    return;
+  }
+  state.attachingTargetIds.add(info.targetId);
+  try {
+    await attachPageTarget(cdp, info, state);
+  } catch (err) {
+    state.lastObservedError = `attach page failed: ${err?.message || err}`;
+  } finally {
+    state.attachingTargetIds.delete(info.targetId);
+  }
+}
+
 async function markActiveWorkflowDisconnected(state, message) {
   if (!state.activeWorkflowId) {
     await persistSessionState(state.store, state, {
@@ -2234,6 +2500,7 @@ export async function connectInspectRuntime({
     targetsBySessionId: new Map(),
     targetsById: new Map(),
     targetInfosByTargetId: new Map(),
+    attachingTargetIds: new Set(),
     lastSelectionEvent: null,
     lastObservedError: null,
     targetDomainAvailable: false,
@@ -2241,6 +2508,7 @@ export async function connectInspectRuntime({
     selectionRecorder: Promise.resolve(),
     domReadyBySessionKey: new Set(),
     captureMetaByTargetId: new Map(),
+    pageCaptureScriptByTargetId: new Map(),
     store: createInspectStore({
       debugHost: browserUrl.hostname,
       debugPort: browserUrl.port || "80",
@@ -2256,6 +2524,28 @@ export async function connectInspectRuntime({
   };
 
   try {
+    cdp.onEvent((message) => {
+      if (message.method === "Target.targetCreated" || message.method === "Target.targetInfoChanged") {
+        const info = message.params?.targetInfo;
+        if (!info) {
+          return;
+        }
+        updateTargetInfo(state, info);
+        void attachTargetIfNeeded(cdp, state, info);
+        return;
+      }
+      if (message.method === "Target.targetDestroyed") {
+        detachTrackedTarget(state, message.params?.targetId, cdp);
+        return;
+      }
+      if (message.method === "Target.detachedFromTarget") {
+        const targetId = state.targetsBySessionId.get(message.params?.sessionId);
+        if (targetId) {
+          detachTrackedTarget(state, targetId, cdp);
+        }
+      }
+    });
+
     await initializeStoreState(state.store, state);
     state.bridgeOwner = await claimBridgeOwnership(state.store, {
       debugUrl,
@@ -2282,12 +2572,7 @@ export async function connectInspectRuntime({
       if (info.type !== "page") {
         return;
       }
-      updateTargetInfo(state, info);
-      try {
-        await attachPageTarget(cdp, info, state);
-      } catch (err) {
-        state.lastObservedError = `attach page failed: ${err?.message || err}`;
-      }
+      await attachTargetIfNeeded(cdp, state, info);
     }));
 
     if (!state.targetsById.size) {
