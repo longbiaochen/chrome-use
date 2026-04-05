@@ -20,6 +20,7 @@ const DEFAULT_POLL_MS = 250;
 const DEFAULT_TRUNCATE = 400;
 const CDP_METHOD_NOT_FOUND_CODE = -32601;
 const BRIDGE_OWNER_VERSION = 1;
+const PAGE_TOOLBAR_STATE_SIGNAL_PREFIX = "__chromeInspectToolbarState:";
 
 function parseNumber(value, fallback) {
   const parsed = Number(value);
@@ -955,13 +956,25 @@ async function setInspectModeForSession(cdp, sessionState, mode) {
 }
 
 function buildPageSelectionCaptureSource(workflowId, captureToken, {
-  mode = "inspect",
+  mode = "inspecting",
   cancelled = false,
 } = {}) {
   return `(() => {
     const key = "__chromeInspectAgentState";
     const styleId = "chrome-inspect-toolbar-style";
     const toolbarSelector = "[data-chrome-inspect-toolbar]";
+    const states = {
+      inspecting: "inspecting",
+      selected: "selected",
+      exited: "exited",
+    };
+    const initialState = (() => {
+      const requested = ${JSON.stringify(mode)};
+      if (requested === states.selected || requested === states.exited || requested === states.inspecting) {
+        return requested;
+      }
+      return ${cancelled ? "states.exited" : "states.inspecting"};
+    })();
     const state = window[key] || (window[key] = {});
     const sameWorkflow = state.workflowId === ${JSON.stringify(workflowId)} &&
       state.captureToken === ${JSON.stringify(captureToken)};
@@ -970,12 +983,12 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
     if (!sameWorkflow) {
       state.selected = null;
       state.selectedElement = null;
-      state.cancelled = ${cancelled ? "true" : "false"};
-      state.mode = ${JSON.stringify(mode)};
+      state.toolbarState = initialState;
+      state.cancelled = initialState === states.exited;
       state.armedAt = Date.now();
     } else {
-      state.cancelled = ${cancelled ? "true" : "false"};
-      state.mode = state.mode || ${JSON.stringify(mode)};
+      state.toolbarState = initialState;
+      state.cancelled = initialState === states.exited;
       state.armedAt = state.armedAt || Date.now();
     }
 
@@ -1019,68 +1032,77 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
         style.textContent = \`
 [data-chrome-inspect-toolbar] {
   position: fixed;
-  top: 16px;
-  right: 16px;
+  top: 14px;
+  right: 14px;
   z-index: 2147483647;
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-width: 240px;
-  max-width: min(340px, calc(100vw - 24px));
-  padding: 10px 12px;
-  border-radius: 14px;
-  background: rgba(18, 18, 18, 0.94);
+  gap: 8px;
+  max-width: min(420px, calc(100vw - 24px));
+  padding: 6px 8px 6px 10px;
+  border-radius: 999px;
+  background: rgba(16, 16, 16, 0.92);
   color: #fff;
   border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.34);
-  font: 500 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  backdrop-filter: blur(14px);
-}
-[data-chrome-inspect-toolbar] [data-role="label"] {
-  flex: 1;
-  min-width: 0;
-}
-[data-chrome-inspect-toolbar] [data-role="title"] {
-  display: block;
-  margin-bottom: 3px;
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.58);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
+  font: 600 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  backdrop-filter: blur(12px);
 }
 [data-chrome-inspect-toolbar] [data-role="status"] {
-  display: block;
-  color: rgba(255, 255, 255, 0.95);
+  min-width: 0;
+  max-width: 180px;
+  color: rgba(255, 255, 255, 0.92);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 [data-chrome-inspect-toolbar] [data-role="actions"] {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  flex: none;
 }
 [data-chrome-inspect-toolbar] button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-width: 42px;
-  height: 36px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 10px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 999px;
   cursor: pointer;
   color: #fff;
-  background: rgba(255, 255, 255, 0.08);
-  transition: transform 120ms ease, background 120ms ease;
+  background: rgba(255, 255, 255, 0.06);
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, opacity 120ms ease;
 }
 [data-chrome-inspect-toolbar] button:hover {
   transform: translateY(-1px);
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.12);
 }
-[data-chrome-inspect-toolbar] button[data-active="true"] {
+[data-chrome-inspect-toolbar] button[data-role="inspect"] {
+  padding: 0 12px;
   background: #ff6600;
+  border-color: rgba(255, 255, 255, 0.08);
 }
-[data-chrome-inspect-toolbar] button[data-chrome-inspect-action="exit"] {
-  background: rgba(204, 51, 68, 0.22);
+[data-chrome-inspect-toolbar] button[data-role="inspect"][data-active="false"] {
+  opacity: 0.92;
+}
+[data-chrome-inspect-toolbar] button[data-role="inspect"][data-active="true"] {
+  background: #ff6600;
+  border-color: rgba(255, 255, 255, 0.18);
+}
+[data-chrome-inspect-toolbar] button[data-role="exit"] {
+  width: 28px;
+  min-width: 28px;
+  padding: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.72);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+[data-chrome-inspect-toolbar] button[data-role="exit"]:hover {
+  color: #fff;
+  border-color: rgba(204, 51, 68, 0.4);
+  background: rgba(204, 51, 68, 0.16);
 }
 [data-chrome-inspect-toolbar] button svg {
   width: 14px;
@@ -1101,26 +1123,62 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
       return node instanceof Element && !!node.closest(toolbarSelector);
     };
 
+    state.resolveToolbarState = () => {
+      if (state.toolbarState === states.selected || state.toolbarState === states.exited || state.toolbarState === states.inspecting) {
+        return state.toolbarState;
+      }
+      if (state.cancelled) {
+        return states.exited;
+      }
+      if (state.selected) {
+        return states.selected;
+      }
+      return states.inspecting;
+    };
+
+    state.statusTextForState = (toolbarState) => {
+      if (toolbarState === states.selected) {
+        return "Element selected";
+      }
+      if (toolbarState === states.exited) {
+        return "Inspect exited";
+      }
+      return "Inspect mode active";
+    };
+
+    state.reportToolbarState = (reason) => {
+      try {
+        const toolbarState = state.resolveToolbarState();
+        console.info(${JSON.stringify(PAGE_TOOLBAR_STATE_SIGNAL_PREFIX)} + JSON.stringify({
+          workflowId: state.workflowId || null,
+          captureToken: state.captureToken || null,
+          mode: toolbarState,
+          cancelled: toolbarState === states.exited,
+          reason: reason || "unknown",
+        }));
+      } catch {}
+    };
+
     state.updateToolbar = () => {
       if (!state.toolbar || !state.toolbar.isConnected) {
         state.ensureToolbar();
       }
       if (!state.toolbar) return;
+      const toolbarState = state.resolveToolbarState();
+      state.toolbar.dataset.state = toolbarState;
       if (state.toolbarStatus) {
-        if (state.selected) {
-          state.toolbarStatus.textContent = "Element selected. Return to the agent for the next step.";
-        } else if (state.cancelled || state.mode !== "inspect") {
-          state.toolbarStatus.textContent = "Inspect mode exited. Start a new capture when ready.";
-        } else {
-          state.toolbarStatus.textContent = "Inspect mode is active. Click an element to capture it.";
-        }
+        state.toolbarStatus.textContent = state.statusTextForState(toolbarState);
       }
       if (state.toolbarInspectButton) {
-        state.toolbarInspectButton.dataset.active = state.mode === "inspect" ? "true" : "false";
+        state.toolbarInspectButton.dataset.active = toolbarState === states.inspecting ? "true" : "false";
+      }
+      if (state.toolbarExitButton) {
+        state.toolbarExitButton.dataset.active = toolbarState === states.exited ? "true" : "false";
       }
     };
 
     state.updateHeartbeat = () => {
+      const toolbarState = state.resolveToolbarState();
       state.heartbeat = {
         at: Date.now(),
         workflowId: state.workflowId || null,
@@ -1131,9 +1189,22 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
           ? state.highlighted.className
           : null,
         selected: state.selected || null,
-        cancelled: !!state.cancelled,
-        mode: state.mode || "idle",
+        cancelled: toolbarState === states.exited,
+        mode: toolbarState,
       };
+    };
+
+    state.transitionTo = (nextToolbarState, { clearSelection = false } = {}) => {
+      state.toolbarState = nextToolbarState;
+      state.cancelled = nextToolbarState === states.exited;
+      if (clearSelection) {
+        state.selected = null;
+        state.selectedElement = null;
+      }
+      state.applyMode();
+      state.updateToolbar();
+      state.updateHeartbeat();
+      state.reportToolbarState("transition");
     };
 
     state.ensureToolbar = () => {
@@ -1143,24 +1214,20 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
         toolbar = document.createElement("div");
         toolbar.setAttribute("data-chrome-inspect-toolbar", "true");
         toolbar.innerHTML = \`
-          <div data-role="label">
-            <span data-role="title">Chrome Inspect</span>
-            <span data-role="status"></span>
-          </div>
+          <span data-role="status"></span>
           <div data-role="actions">
-            <button type="button" data-chrome-inspect-action="inspect" aria-label="Inspect element">
+            <button type="button" data-role="inspect" data-chrome-inspect-action="inspect" aria-label="Inspect element">
               <svg viewBox="0 0 16 16" aria-hidden="true">
                 <circle cx="7" cy="7" r="4.25"></circle>
                 <path d="M10.5 10.5L14 14"></path>
               </svg>
               <span>Inspect</span>
             </button>
-            <button type="button" data-chrome-inspect-action="exit" aria-label="Exit inspect mode">
+            <button type="button" data-role="exit" data-chrome-inspect-action="exit" aria-label="Exit inspect mode">
               <svg viewBox="0 0 16 16" aria-hidden="true">
                 <path d="M4 4L12 12"></path>
                 <path d="M12 4L4 12"></path>
               </svg>
-              <span>Exit</span>
             </button>
           </div>
         \`;
@@ -1174,13 +1241,7 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
         state.handleInspectClick = (event) => {
           event.preventDefault();
           event.stopPropagation();
-          state.cancelled = false;
-          state.selected = null;
-          state.selectedElement = null;
-          state.mode = "inspect";
-          state.applyMode();
-          state.updateToolbar();
-          state.updateHeartbeat();
+          state.transitionTo(states.inspecting, { clearSelection: true });
         };
         state.toolbarInspectButton.addEventListener("click", state.handleInspectClick, true);
         state.toolbarInspectButton.__chromeInspectBound = true;
@@ -1189,13 +1250,7 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
         state.handleExitClick = (event) => {
           event.preventDefault();
           event.stopPropagation();
-          state.cancelled = true;
-          state.selected = null;
-          state.selectedElement = null;
-          state.mode = "idle";
-          state.applyMode();
-          state.updateToolbar();
-          state.updateHeartbeat();
+          state.transitionTo(states.exited, { clearSelection: true });
         };
         state.toolbarExitButton.addEventListener("click", state.handleExitClick, true);
         state.toolbarExitButton.__chromeInspectBound = true;
@@ -1205,7 +1260,7 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
     };
 
     state.handleMove = (event) => {
-      if (state.mode !== "inspect") return;
+      if (state.resolveToolbarState() !== states.inspecting) return;
       const el = event.target instanceof Element ? event.target : null;
       if (!el || state.isToolbarElement(el)) return;
       if (state.highlighted && state.highlighted !== el) {
@@ -1223,7 +1278,7 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
     };
 
     state.handleClick = (event) => {
-      if (state.mode !== "inspect") return;
+      if (state.resolveToolbarState() !== states.inspecting) return;
       const el = event.target instanceof Element ? event.target : null;
       if (!el || state.isToolbarElement(el)) return;
       event.preventDefault();
@@ -1231,7 +1286,6 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
       if (typeof event.stopImmediatePropagation === "function") {
         event.stopImmediatePropagation();
       }
-      state.cancelled = false;
       state.selectedElement = el;
       state.selected = {
         workflowId: state.workflowId,
@@ -1243,15 +1297,12 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
         clientX: typeof event.clientX === "number" ? event.clientX : null,
         clientY: typeof event.clientY === "number" ? event.clientY : null
       };
-      state.mode = "idle";
-      state.applyMode();
-      state.updateToolbar();
-      state.updateHeartbeat();
+      state.transitionTo(states.selected);
     };
 
     state.applyMode = () => {
       const root = document.documentElement;
-      if (state.mode === "inspect") {
+      if (state.resolveToolbarState() === states.inspecting) {
         root.style.cursor = "crosshair";
         if (!state.listenerInstalled) {
           document.addEventListener("mousemove", state.handleMove, true);
@@ -1286,6 +1337,7 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
       state.applyMode();
       state.updateToolbar();
       state.updateHeartbeat();
+      state.reportToolbarState("mount");
     };
 
     state.cleanup = () => {
@@ -1421,7 +1473,7 @@ export async function reflectSelectionOnPage(cdp, sessionState, workflowId, payl
     const state = window.__chromeInspectAgentState;
     if (!state || state.workflowId !== ${JSON.stringify(workflowId)}) return false;
     state.cancelled = false;
-    state.mode = "idle";
+    state.toolbarState = "selected";
     state.selected = ${JSON.stringify(selected)};
     if (typeof state.applyMode === "function") {
       state.applyMode();
@@ -1456,7 +1508,7 @@ async function armPageSelectionCapture(cdp, state, workflow) {
       const meta = await armCaptureForTarget(cdp, state, targetId, {
         workflowId,
         captureToken: workflow.captureToken,
-        mode: "inspect",
+        mode: "inspecting",
         cancelled: false,
         reason: "workflow_begin",
       });
@@ -1952,7 +2004,7 @@ async function awaitWorkflowSelection(state, cdp, workflowId, waitForSelectionMs
         updateCaptureMetaForTarget(state, heartbeatTargetId, {
           workflowId,
           captureToken: heartbeat.captureToken || state.captureMetaByTargetId.get(heartbeatTargetId)?.captureToken || null,
-          mode: heartbeat.heartbeat?.mode || (heartbeat.cancelled ? "idle" : "inspect"),
+          mode: heartbeat.heartbeat?.mode || (heartbeat.cancelled ? "exited" : "inspecting"),
           cancelled: !!heartbeat.cancelled,
         });
       }
@@ -2187,7 +2239,7 @@ async function recordSelectionForWorkflow(cdp, state, selection) {
       updateCaptureMetaForTarget(state, selection.targetId, {
         workflowId,
         captureToken: payload.captureToken || selection.captureToken || null,
-        mode: "idle",
+        mode: "selected",
         cancelled: false,
       });
     }
@@ -2331,6 +2383,20 @@ async function attachPageTarget(cdp, targetInfo, state) {
       return;
     }
 
+    if (message.method === "Runtime.consoleAPICalled") {
+      const signal = parseToolbarStateSignal(message);
+      if (!signal) {
+        return;
+      }
+      updateCaptureMetaForTarget(state, targetInfo.targetId, {
+        workflowId: signal.workflowId || state.activeWorkflowId || null,
+        captureToken: signal.captureToken || state.captureMetaByTargetId.get(targetInfo.targetId)?.captureToken || null,
+        mode: signal.mode || state.captureMetaByTargetId.get(targetInfo.targetId)?.mode || "inspecting",
+        cancelled: !!signal.cancelled,
+      });
+      return;
+    }
+
     if (message.method === "Page.frameNavigated") {
       const frame = message.params?.frame || null;
       if (!frame) {
@@ -2366,7 +2432,7 @@ async function attachPageTarget(cdp, targetInfo, state) {
         await armCaptureForTarget(cdp, state, targetInfo.targetId, {
           workflowId: state.activeWorkflowId,
           captureToken: workflow.captureToken,
-          mode: "inspect",
+          mode: "inspecting",
           cancelled: false,
           reason: "target_attached",
         });
@@ -2448,6 +2514,24 @@ function updateCaptureMetaForTarget(state, targetId, patch) {
   return next;
 }
 
+function parseToolbarStateSignal(message) {
+  if (!message?.params?.args || !Array.isArray(message.params.args)) {
+    return null;
+  }
+  for (const arg of message.params.args) {
+    const value = typeof arg?.value === "string" ? arg.value : "";
+    if (!value.startsWith(PAGE_TOOLBAR_STATE_SIGNAL_PREFIX)) {
+      continue;
+    }
+    try {
+      return JSON.parse(value.slice(PAGE_TOOLBAR_STATE_SIGNAL_PREFIX.length));
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 function getActiveCaptureMetaForTarget(state, targetId) {
   if (!targetId || !state.activeWorkflowId) {
     return null;
@@ -2462,7 +2546,7 @@ function getActiveCaptureMetaForTarget(state, targetId) {
 async function armCaptureForTarget(cdp, state, targetId, {
   workflowId,
   captureToken,
-  mode = "inspect",
+  mode = "inspecting",
   cancelled = false,
   reason = "manual",
 } = {}) {
@@ -2508,7 +2592,7 @@ async function rearmCaptureForTargetIfActive(cdp, state, targetId, reason) {
   const pending = armCaptureForTarget(cdp, state, targetId, {
     workflowId: meta.workflowId,
     captureToken: meta.captureToken,
-    mode: meta.mode || "inspect",
+    mode: meta.mode || "inspecting",
     cancelled: !!meta.cancelled,
     reason,
   }).finally(() => {

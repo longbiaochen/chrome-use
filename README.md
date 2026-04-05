@@ -167,6 +167,14 @@ To verify the dedicated-profile runtime contract with mocked process, endpoint, 
 bash scripts/test-runtime.sh
 ```
 
+To run the local closed-loop visual validation for the compact inspect toolbar, run:
+
+```bash
+node runtime/chrome-use/scripts/inspect_visual_loop.mjs
+```
+
+The script opens the dedicated browser against a deterministic local fixture, drives the toolbar through inspect, exit, reload, same-tab navigation, and same-document navigation, and writes screenshots to a temp output directory.
+
 ## Platform support
 
 - macOS: tested

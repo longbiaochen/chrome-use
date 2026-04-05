@@ -417,6 +417,29 @@ test_inspect_runtime_source_tracks_navigation_rearm() {
   assert_contains "Page.navigatedWithinDocument" "$runtime_source" "inspect runtime listens for same-document navigation"
   assert_contains "rearmCaptureForTargetIfActive" "$runtime_source" "inspect runtime exposes lifecycle rearm helper"
   assert_contains "Target.targetCreated" "$runtime_source" "inspect runtime attaches new page targets during capture"
+  assert_contains "\"Inspect mode active\"" "$runtime_source" "inspect runtime exposes compact inspecting label"
+  assert_contains "\"Element selected\"" "$runtime_source" "inspect runtime exposes compact selected label"
+  assert_contains "\"Inspect exited\"" "$runtime_source" "inspect runtime exposes compact exited label"
+}
+
+test_visual_loop_assets_exist() {
+  if [[ -f "$RUNTIME_ROOT/scripts/inspect_visual_loop.mjs" ]]; then
+    log_ok "inspect visual loop script exists"
+  else
+    log_fail "inspect visual loop script is missing"
+  fi
+
+  if [[ -f "$RUNTIME_ROOT/fixtures/inspect-visual/index.html" ]]; then
+    log_ok "inspect visual fixture index exists"
+  else
+    log_fail "inspect visual fixture index is missing"
+  fi
+
+  if [[ -f "$RUNTIME_ROOT/fixtures/inspect-visual/next.html" ]]; then
+    log_ok "inspect visual fixture next page exists"
+  else
+    log_fail "inspect visual fixture next page is missing"
+  fi
 }
 
 main() {
@@ -434,6 +457,7 @@ main() {
   test_inspect_capture_wrapper_targets_shared_runtime
   test_auth_cdp_wrapper_targets_shared_runtime
   test_inspect_runtime_source_tracks_navigation_rearm
+  test_visual_loop_assets_exist
 
   if [[ "$failures" -gt 0 ]]; then
     echo "Runtime tests failed with $failures issue(s)." >&2

@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Inspect Visual Fixture Two</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at bottom right, rgba(160, 207, 255, 0.45), transparent 30%),
+          linear-gradient(180deg, #f4f8ff 0%, #e7edf8 100%);
+        color: #121922;
+      }
+      main {
+        width: min(760px, calc(100vw - 48px));
+        margin: 0 auto;
+        padding: 88px 0 120px;
+      }
+      h1 {
+        margin: 0 0 12px;
+        font-size: clamp(2rem, 4vw, 3rem);
+        line-height: 1;
+      }
+      p {
+        max-width: 48ch;
+        margin: 0 0 16px;
+        line-height: 1.55;
+      }
+      nav {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin: 24px 0 32px;
+      }
+      a {
+        display: inline-flex;
+        align-items: center;
+        padding: 10px 14px;
+        border-radius: 999px;
+        background: rgba(18, 25, 34, 0.08);
+        color: inherit;
+        text-decoration: none;
+      }
+      .panel {
+        width: min(420px, 100%);
+        padding: 24px;
+        border-radius: 24px;
+        background: rgba(255, 255, 255, 0.82);
+        box-shadow: 0 16px 36px rgba(0, 0, 0, 0.08);
+      }
+      #notes {
+        margin-top: 56px;
+        padding: 24px;
+        border-radius: 24px;
+        background: rgba(18, 25, 34, 0.06);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Visual Fixture Two</h1>
+      <p>This page confirms the compact toolbar survives same-tab navigation and preserves state across documents.</p>
+      <nav>
+        <a id="fixture-home-link" href="/index.html">Return to fixture one</a>
+        <a id="fixture-notes-link" href="#notes">Jump to notes</a>
+      </nav>
+      <section class="panel" aria-label="Secondary verification panel">
+        <strong>Navigation destination panel</strong>
+        <p>The toolbar should still be present here after the same-tab page transition.</p>
+      </section>
+      <section id="notes">
+        <h2>Notes</h2>
+        <p>This section validates same-document navigation on the second page.</p>
+      </section>
+    </main>
+  </body>
+</html>
