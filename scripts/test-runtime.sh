@@ -417,9 +417,13 @@ test_inspect_runtime_source_tracks_navigation_rearm() {
   assert_contains "Page.navigatedWithinDocument" "$runtime_source" "inspect runtime listens for same-document navigation"
   assert_contains "rearmCaptureForTargetIfActive" "$runtime_source" "inspect runtime exposes lifecycle rearm helper"
   assert_contains "Target.targetCreated" "$runtime_source" "inspect runtime attaches new page targets during capture"
+  assert_contains "\"idle_selected\"" "$runtime_source" "inspect runtime exposes idle selected toolbar state"
+  assert_contains "captureActive" "$runtime_source" "inspect runtime tracks active capture separate from toolbar state"
+  assert_contains "applyToolbarStateToAllTargets" "$runtime_source" "inspect runtime keeps toolbar resident across workflow transitions"
   assert_contains "\"Inspect mode active\"" "$runtime_source" "inspect runtime exposes compact inspecting label"
   assert_contains "\"Element selected\"" "$runtime_source" "inspect runtime exposes compact selected label"
   assert_contains "\"Inspect exited\"" "$runtime_source" "inspect runtime exposes compact exited label"
+  assert_contains "inspect_requested_without_capture" "$runtime_source" "inspect runtime handles inspect clicks without a live capture"
 }
 
 test_visual_loop_assets_exist() {

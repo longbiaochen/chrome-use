@@ -486,7 +486,7 @@ function isWorkflowCaptureInProgress(workflow) {
   if (!workflow) {
     return false;
   }
-  return workflow.status === "waiting_for_selection" || workflow.status === "selection_received";
+  return workflow.status === "waiting_for_selection";
 }
 
 export async function restoreActiveWorkflowState(store, state, owner = null) {
@@ -801,10 +801,13 @@ async function resolveSelectedElementPayload(
 
   let nodeId = selection.nodeId;
   if (!nodeId && backendNodeId) {
-    const pushed = await activeCdp.send(
+    const pushed = await sendDomCommandWithRecovery(
+      activeCdp,
+      sessionId,
+      state,
+      domCacheKey,
       "DOM.pushNodesByBackendIdsToFrontend",
       { backendNodeIds: [backendNodeId] },
-      sessionId,
     );
     nodeId = pushed?.nodeIds?.[0];
   }
@@ -813,11 +816,18 @@ async function resolveSelectedElementPayload(
   }
 
   const [describeResult, boxResult, outerResult] = await Promise.all([
-    activeCdp.send("DOM.describeNode", { nodeId }, sessionId),
-    activeCdp.send("DOM.getBoxModel", { nodeId }, sessionId).catch(() => null),
-    activeCdp.send("DOM.getOuterHTML", { nodeId }, sessionId).catch(async () => {
+    sendDomCommandWithRecovery(activeCdp, sessionId, state, domCacheKey, "DOM.describeNode", { nodeId }),
+    sendDomCommandWithRecovery(activeCdp, sessionId, state, domCacheKey, "DOM.getBoxModel", { nodeId }).catch(() => null),
+    sendDomCommandWithRecovery(activeCdp, sessionId, state, domCacheKey, "DOM.getOuterHTML", { nodeId }).catch(async () => {
       try {
-        return await activeCdp.send("DOM.getOuterHTML", { backendNodeId }, sessionId);
+        return await sendDomCommandWithRecovery(
+          activeCdp,
+          sessionId,
+          state,
+          domCacheKey,
+          "DOM.getOuterHTML",
+          { backendNodeId },
+        );
       } catch {
         return null;
       }
@@ -923,6 +933,32 @@ function getSessionRuntime(sessionState, cdp) {
   return { activeCdp, sessionId };
 }
 
+async function updatePageToolbarState(cdp, sessionState, options = {}) {
+  if (!sessionState) {
+    return false;
+  }
+  const { activeCdp, sessionId } = getSessionRuntime(sessionState, cdp);
+  const expression = buildPageSelectionCaptureSource(
+    options.workflowId || null,
+    options.captureToken || null,
+    {
+      mode: options.mode || "exited",
+      cancelled: !!options.cancelled,
+      captureActive: !!options.captureActive,
+    },
+  );
+  try {
+    const result = await activeCdp.send(
+      "Runtime.evaluate",
+      { expression, returnByValue: true, awaitPromise: true },
+      sessionId,
+    );
+    return !!result?.result?.value;
+  } catch {
+    return false;
+  }
+}
+
 async function ensureDomReady(activeCdp, sessionId, state, domCacheKey) {
   if (!activeCdp) {
     throw new Error("No active CDP session is available.");
@@ -934,6 +970,21 @@ async function ensureDomReady(activeCdp, sessionId, state, domCacheKey) {
   await activeCdp.send("DOM.enable", {}, sessionId);
   await activeCdp.send("DOM.getDocument", { depth: 0, pierce: false }, sessionId);
   state.domReadyBySessionKey.add(cacheKey);
+}
+
+async function sendDomCommandWithRecovery(activeCdp, sessionId, state, domCacheKey, method, params = {}) {
+  try {
+    await ensureDomReady(activeCdp, sessionId, state, domCacheKey);
+    return await activeCdp.send(method, params, sessionId);
+  } catch (err) {
+    if (!isRetryableSelectionMaterializationError(err)) {
+      throw err;
+    }
+    const cacheKey = domCacheKey || sessionId || "root";
+    state.domReadyBySessionKey.delete(cacheKey);
+    await ensureDomReady(activeCdp, sessionId, state, cacheKey);
+    return activeCdp.send(method, params, sessionId);
+  }
 }
 
 async function setInspectModeForSession(cdp, sessionState, mode) {
@@ -958,6 +1009,7 @@ async function setInspectModeForSession(cdp, sessionState, mode) {
 function buildPageSelectionCaptureSource(workflowId, captureToken, {
   mode = "inspecting",
   cancelled = false,
+  captureActive = true,
 } = {}) {
   return `(() => {
     const key = "__chromeInspectAgentState";
@@ -965,21 +1017,28 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
     const toolbarSelector = "[data-chrome-inspect-toolbar]";
     const states = {
       inspecting: "inspecting",
-      selected: "selected",
+      idleSelected: "idle_selected",
+      idle: "idle",
       exited: "exited",
     };
     const initialState = (() => {
       const requested = ${JSON.stringify(mode)};
-      if (requested === states.selected || requested === states.exited || requested === states.inspecting) {
+      if (
+        requested === states.idleSelected ||
+        requested === states.exited ||
+        requested === states.inspecting ||
+        requested === states.idle
+      ) {
         return requested;
       }
-      return ${cancelled ? "states.exited" : "states.inspecting"};
+      return ${cancelled ? "states.exited" : "states.idle"};
     })();
     const state = window[key] || (window[key] = {});
     const sameWorkflow = state.workflowId === ${JSON.stringify(workflowId)} &&
       state.captureToken === ${JSON.stringify(captureToken)};
     state.workflowId = ${JSON.stringify(workflowId)};
     state.captureToken = ${JSON.stringify(captureToken)};
+    state.captureActive = ${captureActive ? "true" : "false"};
     if (!sameWorkflow) {
       state.selected = null;
       state.selectedElement = null;
@@ -1124,20 +1183,28 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
     };
 
     state.resolveToolbarState = () => {
-      if (state.toolbarState === states.selected || state.toolbarState === states.exited || state.toolbarState === states.inspecting) {
+      if (
+        state.toolbarState === states.idleSelected ||
+        state.toolbarState === states.exited ||
+        state.toolbarState === states.inspecting ||
+        state.toolbarState === states.idle
+      ) {
         return state.toolbarState;
+      }
+      if (!state.captureActive && state.selected) {
+        return states.idleSelected;
       }
       if (state.cancelled) {
         return states.exited;
       }
-      if (state.selected) {
-        return states.selected;
+      if (!state.captureActive) {
+        return states.idle;
       }
       return states.inspecting;
     };
 
     state.statusTextForState = (toolbarState) => {
-      if (toolbarState === states.selected) {
+      if (toolbarState === states.idleSelected) {
         return "Element selected";
       }
       if (toolbarState === states.exited) {
@@ -1154,6 +1221,7 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
           captureToken: state.captureToken || null,
           mode: toolbarState,
           cancelled: toolbarState === states.exited,
+          captureActive: !!state.captureActive,
           reason: reason || "unknown",
         }));
       } catch {}
@@ -1183,6 +1251,7 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
         at: Date.now(),
         workflowId: state.workflowId || null,
         captureToken: state.captureToken || null,
+        captureActive: !!state.captureActive,
         hoveredTagName: state.highlighted ? state.highlighted.tagName : null,
         hoveredId: state.highlighted && state.highlighted.id ? state.highlighted.id : null,
         hoveredClassName: state.highlighted && typeof state.highlighted.className === "string"
@@ -1194,9 +1263,10 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
       };
     };
 
-    state.transitionTo = (nextToolbarState, { clearSelection = false } = {}) => {
+    state.transitionTo = (nextToolbarState, { clearSelection = false, captureActive = state.captureActive } = {}) => {
       state.toolbarState = nextToolbarState;
       state.cancelled = nextToolbarState === states.exited;
+      state.captureActive = !!captureActive;
       if (clearSelection) {
         state.selected = null;
         state.selectedElement = null;
@@ -1241,7 +1311,13 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
         state.handleInspectClick = (event) => {
           event.preventDefault();
           event.stopPropagation();
-          state.transitionTo(states.inspecting, { clearSelection: true });
+          if (!state.captureActive) {
+            state.updateToolbar();
+            state.updateHeartbeat();
+            state.reportToolbarState("inspect_requested_without_capture");
+            return;
+          }
+          state.transitionTo(states.inspecting, { clearSelection: true, captureActive: true });
         };
         state.toolbarInspectButton.addEventListener("click", state.handleInspectClick, true);
         state.toolbarInspectButton.__chromeInspectBound = true;
@@ -1250,7 +1326,7 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
         state.handleExitClick = (event) => {
           event.preventDefault();
           event.stopPropagation();
-          state.transitionTo(states.exited, { clearSelection: true });
+          state.transitionTo(states.exited, { clearSelection: true, captureActive: state.captureActive });
         };
         state.toolbarExitButton.addEventListener("click", state.handleExitClick, true);
         state.toolbarExitButton.__chromeInspectBound = true;
@@ -1260,7 +1336,7 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
     };
 
     state.handleMove = (event) => {
-      if (state.resolveToolbarState() !== states.inspecting) return;
+      if (!state.captureActive || state.resolveToolbarState() !== states.inspecting) return;
       const el = event.target instanceof Element ? event.target : null;
       if (!el || state.isToolbarElement(el)) return;
       if (state.highlighted && state.highlighted !== el) {
@@ -1278,7 +1354,7 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
     };
 
     state.handleClick = (event) => {
-      if (state.resolveToolbarState() !== states.inspecting) return;
+      if (!state.captureActive || state.resolveToolbarState() !== states.inspecting) return;
       const el = event.target instanceof Element ? event.target : null;
       if (!el || state.isToolbarElement(el)) return;
       event.preventDefault();
@@ -1297,12 +1373,12 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
         clientX: typeof event.clientX === "number" ? event.clientX : null,
         clientY: typeof event.clientY === "number" ? event.clientY : null
       };
-      state.transitionTo(states.selected);
+      state.transitionTo(states.idleSelected, { captureActive: false });
     };
 
     state.applyMode = () => {
       const root = document.documentElement;
-      if (state.resolveToolbarState() === states.inspecting) {
+      if (state.captureActive && state.resolveToolbarState() === states.inspecting) {
         root.style.cursor = "crosshair";
         if (!state.listenerInstalled) {
           document.addEventListener("mousemove", state.handleMove, true);
@@ -1405,7 +1481,8 @@ async function installPageSelectionCapture(cdp, state, sessionState, workflowId,
     sessionId,
   );
 
-  const inspectModeResult = await setInspectModeForSession(cdp, sessionState, "searchForNode");
+  const shouldInspect = options.captureActive !== false && options.mode === "inspecting";
+  const inspectModeResult = await setInspectModeForSession(cdp, sessionState, shouldInspect ? "searchForNode" : "none");
   if (!inspectModeResult.ok) {
     const detail = inspectModeResult.error?.message || inspectModeResult.error || "unknown error";
     state.lastObservedError = `Overlay.setInspectMode unavailable for target ${sessionState?.targetId || "unknown"}: ${detail}`;
@@ -1427,29 +1504,11 @@ async function installPageSelectionCapture(cdp, state, sessionState, workflowId,
 }
 
 async function clearPageSelectionCapture(cdp, state, sessionState) {
-  const { activeCdp, sessionId } = getSessionRuntime(sessionState, cdp);
   const scriptId = state.pageCaptureScriptByTargetId.get(sessionState.targetId);
   if (scriptId) {
+    const { activeCdp, sessionId } = getSessionRuntime(sessionState, cdp);
     await safeSend(activeCdp, "Page.removeScriptToEvaluateOnNewDocument", { identifier: scriptId }, sessionId);
     state.pageCaptureScriptByTargetId.delete(sessionState.targetId);
-  }
-  const expression = `(() => {
-    const state = window.__chromeInspectAgentState;
-    if (!state) return false;
-    if (typeof state.cleanup === "function") {
-      state.cleanup();
-    }
-    delete window.__chromeInspectAgentState;
-    return true;
-  })()`;
-  try {
-    await activeCdp.send(
-      "Runtime.evaluate",
-      { expression, returnByValue: true, awaitPromise: true },
-      sessionId,
-    );
-  } catch {
-    // Ignore cleanup failures on navigation/closed targets.
   }
   await setInspectModeForSession(cdp, sessionState, "none");
 }
@@ -1458,45 +1517,13 @@ export async function reflectSelectionOnPage(cdp, sessionState, workflowId, payl
   if (!sessionState || !workflowId || !payload?.selectedElement) {
     return false;
   }
-  const { activeCdp, sessionId } = getSessionRuntime(sessionState, cdp);
-  const selected = {
+  return updatePageToolbarState(cdp, sessionState, {
     workflowId,
     captureToken: payload.captureToken || null,
-    at: Date.now(),
-    tagName: payload.selectedElement.nodeName || null,
-    id: payload.selectedElement.id || null,
-    className: payload.selectedElement.className || null,
-    clientX: null,
-    clientY: null,
-  };
-  const expression = `(() => {
-    const state = window.__chromeInspectAgentState;
-    if (!state || state.workflowId !== ${JSON.stringify(workflowId)}) return false;
-    state.cancelled = false;
-    state.toolbarState = "selected";
-    state.selected = ${JSON.stringify(selected)};
-    if (typeof state.applyMode === "function") {
-      state.applyMode();
-    }
-    if (typeof state.updateToolbar === "function") {
-      state.updateToolbar();
-    }
-    if (typeof state.updateHeartbeat === "function") {
-      state.updateHeartbeat();
-    }
-    return true;
-  })()`;
-
-  try {
-    const result = await activeCdp.send(
-      "Runtime.evaluate",
-      { expression, returnByValue: true, awaitPromise: true },
-      sessionId,
-    );
-    return !!result?.result?.value;
-  } catch {
-    return false;
-  }
+    mode: "idle_selected",
+    cancelled: false,
+    captureActive: false,
+  });
 }
 
 async function armPageSelectionCapture(cdp, state, workflow) {
@@ -1558,8 +1585,11 @@ async function resolveSelectionByPageClick(cdp, state, sessionState, pageInfo, w
   let backendNodeId = null;
   if (typeof meta.clientX === "number" && typeof meta.clientY === "number") {
     try {
-      await ensureDomReady(activeCdp, sessionId, state, domCacheKey);
-      const hit = await activeCdp.send(
+      const hit = await sendDomCommandWithRecovery(
+        activeCdp,
+        sessionId,
+        state,
+        domCacheKey,
         "DOM.getNodeForLocation",
         {
           x: Math.round(meta.clientX),
@@ -1567,7 +1597,6 @@ async function resolveSelectionByPageClick(cdp, state, sessionState, pageInfo, w
           includeUserAgentShadowDOM: true,
           ignorePointerEventsNone: true,
         },
-        sessionId,
       );
       nodeId = hit?.nodeId || null;
       backendNodeId = hit?.backendNodeId || null;
@@ -1600,8 +1629,14 @@ async function resolveSelectionByPageClick(cdp, state, sessionState, pageInfo, w
     const objectId = selectedElementHandle?.result?.objectId;
     if (objectId) {
       try {
-        await ensureDomReady(activeCdp, sessionId, state, domCacheKey);
-        const request = await activeCdp.send("DOM.requestNode", { objectId }, sessionId);
+        const request = await sendDomCommandWithRecovery(
+          activeCdp,
+          sessionId,
+          state,
+          domCacheKey,
+          "DOM.requestNode",
+          { objectId },
+        );
         nodeId = request?.nodeId || null;
       } catch {
         nodeId = null;
@@ -1690,8 +1725,14 @@ async function resolveSelectionByActiveElement(cdp, state, sessionState, pageInf
 
   let nodeId = null;
   try {
-    await ensureDomReady(activeCdp, sessionId, state, domCacheKey);
-    const request = await activeCdp.send("DOM.requestNode", { objectId }, sessionId);
+    const request = await sendDomCommandWithRecovery(
+      activeCdp,
+      sessionId,
+      state,
+      domCacheKey,
+      "DOM.requestNode",
+      { objectId },
+    );
     nodeId = request?.nodeId;
   } catch {
     return null;
@@ -1702,7 +1743,14 @@ async function resolveSelectionByActiveElement(cdp, state, sessionState, pageInf
 
   let described = null;
   try {
-    described = await activeCdp.send("DOM.describeNode", { nodeId }, sessionId);
+    described = await sendDomCommandWithRecovery(
+      activeCdp,
+      sessionId,
+      state,
+      domCacheKey,
+      "DOM.describeNode",
+      { nodeId },
+    );
   } catch {
     return null;
   }
@@ -1977,6 +2025,17 @@ async function awaitWorkflowSelection(state, cdp, workflowId, waitForSelectionMs
         summary: workflow.summary || inspectSummary(workflow.payload),
         selectionSource: workflow.selectionSource || workflow.payload.selectionSource || null,
       });
+      if (state.activeWorkflowId === workflowId) {
+        state.activeWorkflowId = null;
+      }
+      await applyToolbarStateToAllTargets(cdp, state, {
+        workflowId,
+        captureToken: finalized.captureToken || finalized.payload?.captureToken || null,
+        mode: "idle_selected",
+        cancelled: false,
+        captureActive: false,
+        reason: "await_selection_ready",
+      });
       await persistSessionState(state.store, state, { status: "bridge_ready" });
       return workflowToAwaitingPayload(finalized);
     }
@@ -2041,6 +2100,17 @@ async function awaitWorkflowSelection(state, cdp, workflowId, waitForSelectionMs
           firstSelectionSource: fallback.selectionSource || "active_element_fallback",
         },
       });
+      if (state.activeWorkflowId === workflowId) {
+        state.activeWorkflowId = null;
+      }
+      await applyToolbarStateToAllTargets(cdp, state, {
+        workflowId,
+        captureToken: recovered.captureToken || fallback.captureToken || null,
+        mode: "idle_selected",
+        cancelled: false,
+        captureActive: false,
+        reason: "await_selection_fallback",
+      });
       await persistSessionState(state.store, state, { status: "bridge_ready" });
       return workflowToAwaitingPayload(recovered);
     }
@@ -2073,6 +2143,18 @@ async function awaitWorkflowSelection(state, cdp, workflowId, waitForSelectionMs
         firstSelectionSource: fallback.selectionSource || "active_element_fallback",
       },
     });
+    if (state.activeWorkflowId === workflowId) {
+      state.activeWorkflowId = null;
+    }
+    await applyToolbarStateToAllTargets(cdp, state, {
+      workflowId,
+      captureToken: recovered.captureToken || fallback.captureToken || null,
+      mode: "idle_selected",
+      cancelled: false,
+      captureActive: false,
+      reason: "await_selection_terminal_fallback",
+    });
+    await persistSessionState(state.store, state, { status: "bridge_ready" });
     return workflowToAwaitingPayload(recovered);
   }
 
@@ -2186,12 +2268,18 @@ export async function handleInspectAction(cdp, state, args, messageId) {
     selectionSource: workflow.selectionSource || workflow.payload.selectionSource || null,
     userInstruction: args.instruction.trim(),
   });
-  await persistSessionState(state.store, state, { status: "bridge_ready" });
-  for (const sessionState of state.targetsById.values()) {
-    state.captureMetaByTargetId.delete(sessionState.targetId);
-    state.rearmPendingByTargetId.delete(sessionState.targetId);
-    await clearPageSelectionCapture(cdp, state, sessionState);
+  if (state.activeWorkflowId === workflowId) {
+    state.activeWorkflowId = null;
   }
+  await persistSessionState(state.store, state, { status: "bridge_ready" });
+  await applyToolbarStateToAllTargets(cdp, state, {
+    workflowId,
+    captureToken: workflow.captureToken || workflow.payload.captureToken || null,
+    mode: "idle_selected",
+    cancelled: false,
+    captureActive: false,
+    reason: "instruction_recorded",
+  });
   logSignal("instruction_recorded", { workflowId, sequence: updated.sequence });
 
   return {
@@ -2239,8 +2327,9 @@ async function recordSelectionForWorkflow(cdp, state, selection) {
       updateCaptureMetaForTarget(state, selection.targetId, {
         workflowId,
         captureToken: payload.captureToken || selection.captureToken || null,
-        mode: "selected",
+        mode: "idle_selected",
         cancelled: false,
+        captureActive: false,
       });
     }
     const workflow = await persistWorkflowState(state.store, state, workflowId, {
@@ -2265,9 +2354,15 @@ async function recordSelectionForWorkflow(cdp, state, selection) {
       targetId: selection.targetId || null,
       selectionSource: payload.selectionSource || "overlay_event",
     });
-    if (sessionState) {
-      await reflectSelectionOnPage(cdp, sessionState, workflowId, payload);
-    }
+    state.activeWorkflowId = null;
+    await applyToolbarStateToAllTargets(cdp, state, {
+      workflowId,
+      captureToken: payload.captureToken || selection.captureToken || null,
+      mode: "idle_selected",
+      cancelled: false,
+      captureActive: false,
+      reason: "selection_recorded",
+    });
   } else {
     logSignal("selection_recorded_without_workflow", {
       sequence: currentSelection.sequence,
@@ -2391,8 +2486,9 @@ async function attachPageTarget(cdp, targetInfo, state) {
       updateCaptureMetaForTarget(state, targetInfo.targetId, {
         workflowId: signal.workflowId || state.activeWorkflowId || null,
         captureToken: signal.captureToken || state.captureMetaByTargetId.get(targetInfo.targetId)?.captureToken || null,
-        mode: signal.mode || state.captureMetaByTargetId.get(targetInfo.targetId)?.mode || "inspecting",
+        mode: signal.mode || state.captureMetaByTargetId.get(targetInfo.targetId)?.mode || "exited",
         cancelled: !!signal.cancelled,
+        captureActive: !!signal.captureActive,
       });
       return;
     }
@@ -2429,11 +2525,12 @@ async function attachPageTarget(cdp, targetInfo, state) {
     try {
       const workflow = await readWorkflow(state.store, state.activeWorkflowId);
       if (workflow?.captureToken) {
-        await armCaptureForTarget(cdp, state, targetInfo.targetId, {
+        await applyToolbarStateForTarget(cdp, state, targetInfo.targetId, {
           workflowId: state.activeWorkflowId,
           captureToken: workflow.captureToken,
           mode: "inspecting",
           cancelled: false,
+          captureActive: true,
           reason: "target_attached",
         });
       }
@@ -2441,6 +2538,15 @@ async function attachPageTarget(cdp, targetInfo, state) {
       state.lastObservedError = `page capture arm failed for ${targetInfo.targetId}: ${err?.message || err}`;
       logSignal("page_capture_arm_error", { workflowId: state.activeWorkflowId, targetId: targetInfo.targetId, error: state.lastObservedError });
     }
+  } else {
+    await applyToolbarStateForTarget(cdp, state, targetInfo.targetId, {
+      workflowId: null,
+      captureToken: null,
+      mode: "exited",
+      cancelled: false,
+      captureActive: false,
+      reason: "target_attached_idle",
+    });
   }
 }
 
@@ -2514,6 +2620,61 @@ function updateCaptureMetaForTarget(state, targetId, patch) {
   return next;
 }
 
+async function applyToolbarStateForTarget(cdp, state, targetId, {
+  workflowId = null,
+  captureToken = null,
+  mode = "exited",
+  cancelled = false,
+  captureActive = false,
+  reason = "manual",
+} = {}) {
+  const sessionState = state.targetsById.get(targetId);
+  if (!sessionState) {
+    return null;
+  }
+  const toolbar = await installPageSelectionCapture(
+    cdp,
+    state,
+    sessionState,
+    workflowId,
+    captureToken,
+    { mode, cancelled, captureActive },
+  );
+  const meta = updateCaptureMetaForTarget(state, targetId, {
+    workflowId,
+    captureToken,
+    armedAt: toolbar?.armedAt || timingNow(),
+    mode,
+    cancelled,
+    captureActive,
+  });
+  logSignal("page_toolbar_synced", {
+    targetId,
+    workflowId,
+    captureToken,
+    mode,
+    cancelled,
+    captureActive,
+    reason,
+  });
+  return meta;
+}
+
+async function applyToolbarStateToAllTargets(cdp, state, options = {}) {
+  for (const targetId of state.targetsById.keys()) {
+    try {
+      await applyToolbarStateForTarget(cdp, state, targetId, options);
+    } catch (err) {
+      state.lastObservedError = `page toolbar sync failed for ${targetId}: ${err?.message || err}`;
+      logSignal("page_toolbar_sync_error", {
+        targetId,
+        reason: options.reason || "manual",
+        error: state.lastObservedError,
+      });
+    }
+  }
+}
+
 function parseToolbarStateSignal(message) {
   if (!message?.params?.args || !Array.isArray(message.params.args)) {
     return null;
@@ -2537,7 +2698,7 @@ function getActiveCaptureMetaForTarget(state, targetId) {
     return null;
   }
   const meta = state.captureMetaByTargetId.get(targetId);
-  if (!meta || meta.workflowId !== state.activeWorkflowId || !meta.captureToken) {
+  if (!meta || meta.workflowId !== state.activeWorkflowId || !meta.captureToken || !meta.captureActive) {
     return null;
   }
   return meta;
@@ -2568,6 +2729,7 @@ async function armCaptureForTarget(cdp, state, targetId, {
     armedAt: armResult.armedAt || timingNow(),
     mode,
     cancelled,
+    captureActive: true,
   });
   logSignal("page_capture_armed", {
     workflowId,
@@ -2583,7 +2745,15 @@ async function armCaptureForTarget(cdp, state, targetId, {
 async function rearmCaptureForTargetIfActive(cdp, state, targetId, reason) {
   const meta = getActiveCaptureMetaForTarget(state, targetId);
   if (!meta) {
-    return null;
+    const fallbackMeta = state.captureMetaByTargetId.get(targetId) || {};
+    return applyToolbarStateForTarget(cdp, state, targetId, {
+      workflowId: fallbackMeta.workflowId || null,
+      captureToken: fallbackMeta.captureToken || null,
+      mode: fallbackMeta.mode || "exited",
+      cancelled: !!fallbackMeta.cancelled,
+      captureActive: !!fallbackMeta.captureActive,
+      reason,
+    });
   }
   const existing = state.rearmPendingByTargetId.get(targetId);
   if (existing) {

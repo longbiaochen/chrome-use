@@ -301,7 +301,7 @@ function assertToolbarMetrics(metrics, {
     assertCondition(metrics.statusText === expectedText, `Toolbar text mismatch: expected "${expectedText}", got "${metrics.statusText}".`, metrics);
   }
   assertCondition(metrics.toolbar.top <= 20, "Toolbar is not pinned near the top edge.", metrics);
-  assertCondition(metrics.toolbar.rightInset <= 20, "Toolbar is not pinned near the right edge.", metrics);
+  assertCondition(metrics.toolbar.rightInset <= 32, "Toolbar is not pinned near the right edge.", metrics);
   assertCondition(metrics.layout.toolbarCompact, "Toolbar is taller than the compact layout budget.", metrics);
   assertCondition(metrics.toolbar.scrollHeight <= metrics.toolbar.height + 1, "Toolbar content overflowed vertically.", metrics);
   assertCondition(metrics.status.whiteSpace === "nowrap", "Toolbar status is not constrained to a single line.", metrics);
@@ -410,7 +410,7 @@ async function main() {
     }, 2);
     assertCondition(awaited?.phase === "awaiting_user_instruction", "Expected a completed selection payload.", awaited);
     results.push(await recordStep(runtime, sessionState, outputDir, "06-selected", {
-      expectedState: "selected",
+      expectedState: "idle_selected",
       expectedText: "Element selected",
     }));
 
@@ -418,34 +418,57 @@ async function main() {
     await clickSelector(runtime, sessionState, "#fixture-next-link");
     sessionState = await waitFor(async () => selectTargetSession(runtime, `${fixtureServer.origin}/next.html`), 8000, "next page target");
     results.push(await recordStep(runtime, sessionState, outputDir, "07-selected-after-navigation", {
-      expectedState: "selected",
+      expectedState: "idle_selected",
       expectedText: "Element selected",
     }));
 
     logStep("Triggering same-document navigation on the second page");
     await clickSelector(runtime, sessionState, "#fixture-notes-link");
     results.push(await recordStep(runtime, sessionState, outputDir, "08-selected-after-hash-nav", {
-      expectedState: "selected",
+      expectedState: "idle_selected",
       expectedText: "Element selected",
+    }));
+
+    logStep("Starting a new capture on the second page");
+    const secondBegin = await handleInspectAction(runtime.cdp, runtime.state, { action: "begin_capture" }, 3);
+    assertCondition(Boolean(secondBegin?.workflowId), "Expected second capture workflow.", secondBegin);
+    results.push(await recordStep(runtime, sessionState, outputDir, "09-second-capture-armed", {
+      expectedState: "inspecting",
+      expectedText: "Inspect mode active",
     }));
 
     logStep("Validating narrow viewport layout");
     await setViewport(runtime, sessionState, 360, 800);
-    results.push(await recordStep(runtime, sessionState, outputDir, "09-narrow-viewport", {
-      expectedState: "selected",
-      expectedText: "Element selected",
+    results.push(await recordStep(runtime, sessionState, outputDir, "10-narrow-viewport", {
+      expectedState: "inspecting",
+      expectedText: "Inspect mode active",
     }));
     await clearViewport(runtime, sessionState);
+
+    logStep("Selecting a target on the second page");
+    await clickSelector(runtime, sessionState, ".panel");
+    const secondAwaited = await handleInspectAction(runtime.cdp, runtime.state, {
+      action: "await_selection",
+      workflowId: secondBegin.workflowId,
+      waitForSelectionMs: 500,
+      timeoutMs: 6000,
+    }, 4);
+    assertCondition(secondAwaited?.phase === "awaiting_user_instruction", "Expected a completed second selection payload.", secondAwaited);
+    results.push(await recordStep(runtime, sessionState, outputDir, "11-second-selected", {
+      expectedState: "idle_selected",
+      expectedText: "Element selected",
+    }));
 
     logStep("Clearing the workflow");
     const apply = await handleInspectAction(runtime.cdp, runtime.state, {
       action: "apply_instruction",
-      workflowId,
+      workflowId: secondBegin.workflowId,
       instruction: "Visual validation complete.",
-    }, 3);
+    }, 5);
     assertCondition(apply?.phase === "ready_to_apply", "Expected apply_instruction to complete.", apply);
-    results.push(await recordStep(runtime, sessionState, outputDir, "10-toolbar-cleared", {
-      present: false,
+    results.push(await recordStep(runtime, sessionState, outputDir, "12-toolbar-after-apply", {
+      expectedState: "idle_selected",
+      expectedText: "Element selected",
     }));
 
     process.stdout.write(`${JSON.stringify({

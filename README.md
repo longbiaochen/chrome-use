@@ -141,7 +141,9 @@ For `/chrome-inspect` default flow, send:
 2. Let `scripts/open_url.sh` open Chrome and auto-start the local project web app first when `CHROME_INSPECT_PROJECT_ROOT` is configured.
    If the dedicated profile is already running, the command reuses it by opening a new tab there instead of creating another dedicated window.
 3. Start capture with `scripts/inspect-capture begin --project-root "<repo>"` and store the returned `workflowId`.
-4. Confirm inspect mode is armed, then use the page toolbar to stay in `Inspect` mode or `Exit`, and click the target element in Chrome.
+4. Confirm inspect mode is armed, then click the target element in Chrome.
+   After a successful click, inspect mode should auto-exit while the toolbar remains visible.
+   The page should immediately become navigable again, and the toolbar should continue to appear across same-tab navigation, reloads, and same-document navigation.
 5. Call `scripts/inspect-capture await --workflow-id "<workflowId>"`.
 6. Treat the result as valid only if it belongs to the current `workflowId` and follows a fresh click for this capture cycle.
    If `await_selection` appears to return immediately with stale prior context, restart capture instead of presenting it as the new selection.
@@ -152,6 +154,7 @@ For `/chrome-inspect` default flow, send:
 9. Reply with a concrete edit instruction.
 10. Call `scripts/inspect-capture apply --workflow-id "<workflowId>" --instruction "<user instruction>"`.
 11. Confirm returned `phase=ready_to_apply`.
+    `apply` completes the capture workflow only; it should not remove the toolbar from the page.
 
 For `/chrome-auth`, send the command with target URL when known, then use `scripts/auth-cdp` for page status, navigation, screenshots, element lookup, clicks, and typing in the same dedicated profile session.
 
@@ -173,7 +176,7 @@ To run the local closed-loop visual validation for the compact inspect toolbar, 
 node runtime/chrome-use/scripts/inspect_visual_loop.mjs
 ```
 
-The script opens the dedicated browser against a deterministic local fixture, drives the toolbar through inspect, exit, reload, same-tab navigation, and same-document navigation, and writes screenshots to a temp output directory.
+The script opens the dedicated browser against a deterministic local fixture, verifies that selection auto-exits inspect mode, checks that navigation keeps the toolbar injected, re-arms a second capture on the destination page, and writes screenshots to a temp output directory.
 
 ## Platform support
 

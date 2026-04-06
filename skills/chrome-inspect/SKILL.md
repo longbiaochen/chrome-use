@@ -23,7 +23,9 @@ Use this skill when an agent needs deterministic, inspect-first Chrome DOM work 
    - or the one-shot path: `scripts/inspect_select_element.sh "<repo>"`
 5. Ensure the session is attached to the dedicated debug endpoint and that the dedicated profile still has exactly one Chrome window.
 6. The direct inspect runtime should pass the startup URL into the shared runtime so capture prioritizes the freshly opened target instead of attaching unrelated tabs on the same debug endpoint.
-7. Confirm inspect mode is armed, then have the user use the persistent page toolbar to stay in `Inspect` mode or `Exit`, click an element in Chrome, and wait for `await` or `once` to return the normalized selection JSON.
+7. Confirm inspect mode is armed, then have the user use the persistent page toolbar to click a target in Chrome.
+   The toolbar is expected to stay injected across reloads and page navigation.
+   A successful click should automatically exit inspect mode, leave the toolbar visible, and return the page to normal interaction so links and navigation work immediately.
 8. Treat the selection as valid only if it is clearly for the current `workflowId` and follows a fresh operator click for this capture cycle.
    If `await_selection` appears to return immediately with stale prior context, or the durable files only show an older `updatedAt` / `payload.observedAt`, do not present it as the new selection. Restart capture or create a fresh workflow and retry.
 9. Do not return a final response, a completion summary, or a "Worked for ..." timeout-style message before receiving a fresh `phase=awaiting_user_instruction` or equivalent fresh `selection_received` payload for the current capture cycle.
@@ -40,6 +42,8 @@ Use this skill when an agent needs deterministic, inspect-first Chrome DOM work 
    - the element content from `selectedElement.snippet` or equivalent captured text
 11. After reporting that richer element context, ask one concrete DOM instruction.
 12. Re-run the same workflow with `scripts/inspect-capture apply --workflow-id "<workflowId>" --instruction "<user text>"`.
+13. Treat `apply` as ending the capture workflow only.
+    It should not remove the toolbar from the page; the toolbar stays resident in the dedicated profile and the next capture will re-arm inspect mode.
 
 ## Tools
 
@@ -72,6 +76,7 @@ Expected result:
 - JSON on stdout with `workflowId`, `observedAt`, `summary`, `page`, `selectedElement`, and `position`
 - no manual bridge handshake
 - no repo-wide discovery step when `project_webapp_entry.sh` already resolves the preview URL
+- successful selection automatically exits inspect mode while keeping the toolbar visible
 
 ## Notes
 
