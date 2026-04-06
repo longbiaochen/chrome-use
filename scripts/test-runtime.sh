@@ -421,9 +421,12 @@ test_inspect_runtime_source_tracks_navigation_rearm() {
   assert_contains "captureActive" "$runtime_source" "inspect runtime tracks active capture separate from toolbar state"
   assert_contains "applyToolbarStateToAllTargets" "$runtime_source" "inspect runtime keeps toolbar resident across workflow transitions"
   assert_contains "\"Inspect mode active\"" "$runtime_source" "inspect runtime exposes compact inspecting label"
-  assert_contains "\"Element selected\"" "$runtime_source" "inspect runtime exposes compact selected label"
+  assert_contains "\"Selected and saved\"" "$runtime_source" "inspect runtime exposes saved selection label"
   assert_contains "\"Inspect exited\"" "$runtime_source" "inspect runtime exposes compact exited label"
-  assert_contains "inspect_requested_without_capture" "$runtime_source" "inspect runtime handles inspect clicks without a live capture"
+  assert_contains "\"Exit Inspector\"" "$runtime_source" "inspect runtime exposes exit action while inspect mode is active"
+  assert_contains "\"Inspector\"" "$runtime_source" "inspect runtime exposes inspector re-entry action after exit"
+  assert_contains "toolbar_dismissed" "$runtime_source" "inspect runtime exposes toolbar dismissal signal"
+  assert_contains "selection-history.jsonl" "$runtime_source" "inspect runtime persists selection history as JSONL"
 }
 
 test_visual_loop_assets_exist() {

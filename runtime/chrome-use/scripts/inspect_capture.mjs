@@ -2,6 +2,8 @@
 
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,7 +18,7 @@ import {
   toCliSelectionPayload,
 } from "./inspect_runtime.mjs";
 
-const RUNTIME_IDLE_TIMEOUT_MS = 120000;
+const RUNTIME_IDLE_TIMEOUT_MS = 600000;
 
 function printUsage() {
   console.error(`Usage:
@@ -57,7 +59,45 @@ function readJsonIfPresent(filePath) {
   }
 }
 
-function resolveSessionStartupUrl(debugUrl) {
+function fetchJson(url) {
+  const requestFn = url.startsWith("https:") ? httpsRequest : httpRequest;
+  return new Promise((resolve, reject) => {
+    const req = requestFn(url, (res) => {
+      let data = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => {
+        data += chunk;
+      });
+      res.on("end", () => {
+        try {
+          resolve(JSON.parse(data));
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+async function resolveLatestPageUrl(debugUrl) {
+  try {
+    const parsed = new URL(debugUrl);
+    const payload = await fetchJson(`${parsed.origin}/json/list`);
+    const pages = Array.isArray(payload) ? payload.filter((item) => item?.type === "page") : [];
+    const latest = pages[pages.length - 1] || null;
+    return latest?.url || "";
+  } catch {
+    return "";
+  }
+}
+
+async function resolveSessionStartupUrl(debugUrl) {
+  const liveUrl = await resolveLatestPageUrl(debugUrl);
+  if (liveUrl) {
+    return liveUrl;
+  }
   const parsed = new URL(debugUrl);
   const store = createInspectStore({
     debugHost: parsed.hostname,
@@ -120,6 +160,11 @@ function readRuntimeHandle(store) {
   return readJsonIfPresent(store.runtimePath);
 }
 
+function runtimeLaunchLabel(store) {
+  const scope = path.basename(store.inspectDir).replace(/[^a-zA-Z0-9_.-]/g, "_");
+  return `com.chromeuse.inspect.${scope}`;
+}
+
 async function persistRuntimeHandle(store, handle) {
   await atomicWriteJson(store.runtimePath, handle);
   return handle;
@@ -162,16 +207,41 @@ function logSignal(event, details = {}) {
   })}\n`);
 }
 
-async function waitForRuntimeReady(store, pid, timeoutMs = 5000) {
+async function waitForRuntimeReady(store, predicate = () => true, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const handle = readRuntimeHandle(store);
-    if (handle?.pid === pid && handle?.socketPath && existsSync(handle.socketPath)) {
+    if (handle?.socketPath && existsSync(handle.socketPath) && predicate(handle)) {
       return handle;
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   return null;
+}
+
+function launchRuntimeServerWithLaunchctl({ scriptPath, debugUrl, startupUrl, store }) {
+  const label = runtimeLaunchLabel(store);
+  try {
+    execFileSync("launchctl", ["remove", label], { stdio: "ignore" });
+  } catch {
+    // Ignore missing pre-existing jobs.
+  }
+  execFileSync("launchctl", [
+    "submit",
+    "-l",
+    label,
+    "--",
+    process.execPath,
+    scriptPath,
+    "__daemon",
+    "--browser-url",
+    debugUrl,
+    "--startup-url",
+    startupUrl,
+  ], {
+    stdio: "ignore",
+  });
+  return label;
 }
 
 async function connectSocket(socketPath, timeoutMs = 2000) {
@@ -248,16 +318,23 @@ async function ensureRuntimeServer({
     clearRuntimeHandle(store, existing.pid);
   }
 
-  const child = spawn(
-    process.execPath,
-    [scriptPath, "__daemon", "--browser-url", debugUrl, "--startup-url", startupUrl],
-    {
-      detached: true,
-      stdio: "ignore",
-    },
+  if (process.platform === "darwin") {
+    launchRuntimeServerWithLaunchctl({ scriptPath, debugUrl, startupUrl, store });
+  } else {
+    const child = spawn(
+      process.execPath,
+      [scriptPath, "__daemon", "--browser-url", debugUrl, "--startup-url", startupUrl],
+      {
+        detached: true,
+        stdio: "ignore",
+      },
+    );
+    child.unref();
+  }
+  const handle = await waitForRuntimeReady(
+    store,
+    (candidate) => candidate?.debugUrl === debugUrl,
   );
-  child.unref();
-  const handle = await waitForRuntimeReady(store, child.pid);
   if (!handle) {
     throw new Error("Inspect runtime daemon did not become ready in time.");
   }
@@ -437,7 +514,7 @@ async function main() {
     startupUrl = resolved.startupUrl;
     debugUrl = resolved.debugUrl || debugUrl;
   } else {
-    startupUrl = explicitUrl || resolveSessionStartupUrl(debugUrl);
+    startupUrl = explicitUrl || await resolveSessionStartupUrl(debugUrl);
   }
 
   const parsed = new URL(debugUrl);

@@ -17,12 +17,16 @@ interface:
     3. Start direct capture with `scripts/inspect-capture begin --project-root "<repo>"` and store the returned `workflowId`.
     4. Wait for the operator to select an element in Chrome only after inspect mode is armed, and call
        `scripts/inspect-capture await --workflow-id "<workflowId>"`.
-       After a successful click, inspect mode should auto-exit while the toolbar stays visible so the page is immediately navigable again.
+       On entry, the page toolbar should already be in active inspect mode and the primary action should read `Exit Inspector`.
+       After a successful click, inspect mode should auto-exit while the toolbar stays visible, the primary action should change back to `Inspector`, and the page should immediately become navigable again.
+       The saved-selection state should also show a short summary card under the toolbar so the operator can see what was selected and know it has been saved.
+       If the operator clicks `Inspector` after exit, inspect mode should re-enter immediately even before a new workflow is created.
        Treat the selection as valid only if it clearly belongs to the current `workflowId` and follows a fresh operator click.
        If `await_selection` appears to return immediately with stale prior context, or the durable files only show older
        `updatedAt` / `payload.observedAt` values, restart capture or create a fresh workflow instead of presenting it as the new selection.
        Do not return a final response, partial completion summary, or timeout-style "Worked for ..."
        message before the tool returns an element selection result.
+       Prefer this long-wait path in Codex instead of returning early; the runtime process does the waiting, so the token cost is low.
     5. If the return is `phase=awaiting_user_instruction`, output enough selected-element detail for the operator to identify the node immediately.
        Include at least: `summary`, `selectedElement.nodeName`, `selectedElement.selectorHint`,
        `selectedElement.id`, `selectedElement.className`, `selectedElement.ariaLabel`,
@@ -33,4 +37,5 @@ interface:
        `scripts/inspect-capture apply --workflow-id "<workflowId>" --instruction "<user instruction>"`.
     8. Return the `ready_to_apply` payload and keep `selectedElement`, `position`, and `page` as mutation context.
        Do not describe `apply` as removing the toolbar; it only completes the capture workflow.
+       The toolbar should stay injected across same-tab navigation, reloads, and same-document navigation, the most recent successful selection should remain recoverable for a later turn, and `selectionHistoryPath` should point at the JSONL selection trail.
   allow_implicit_invocation: true

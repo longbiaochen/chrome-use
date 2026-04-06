@@ -85,6 +85,83 @@ NODE
   fi
 }
 
+find_matching_target_for_url() {
+  local target_url="$1"
+  local payload
+
+  [[ -n "$target_url" ]] || return 0
+
+  payload="$(curl -fsS "${DEBUG_URL}/json/list" 2>/dev/null || true)"
+  [[ -n "$payload" ]] || return 0
+
+  node - "$payload" "$target_url" <<'NODE'
+const [payload, targetUrl] = process.argv.slice(2);
+function normalize(value) {
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    return url.href;
+  } catch {
+    return value || "";
+  }
+}
+try {
+  const items = JSON.parse(payload);
+  const pages = Array.isArray(items) ? items.filter((item) => item && item.type === "page") : [];
+  const normalizedTarget = normalize(targetUrl);
+  const match = pages.find((item) => normalize(item.url) === normalizedTarget);
+  if (match?.id) {
+    process.stdout.write(String(match.id));
+  }
+} catch {}
+NODE
+}
+
+close_duplicate_targets_for_url() {
+  local target_url="$1"
+  local keep_target_id="$2"
+  local payload
+
+  [[ -n "$target_url" ]] || return 0
+
+  payload="$(curl -fsS "${DEBUG_URL}/json/list" 2>/dev/null || true)"
+  [[ -n "$payload" ]] || return 0
+
+  node - "$payload" "$target_url" "$keep_target_id" <<'NODE' | while IFS= read -r target_id; do
+const [payload, targetUrl, keepTargetId] = process.argv.slice(2);
+function normalize(value) {
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    return url.href;
+  } catch {
+    return value || "";
+  }
+}
+try {
+  const items = JSON.parse(payload);
+  const pages = Array.isArray(items) ? items.filter((item) => item && item.type === "page") : [];
+  const normalizedTarget = normalize(targetUrl);
+  for (const item of pages) {
+    if (!item?.id || item.id === keepTargetId) continue;
+    if (normalize(item.url) === normalizedTarget) {
+      process.stdout.write(`${item.id}\n`);
+    }
+  }
+} catch {}
+NODE
+    [[ -n "$target_id" ]] || continue
+    curl -fsS "http://127.0.0.1:${DEBUG_PORT}/json/close/${target_id}" >/dev/null 2>&1 || true
+  done
+}
+
+activate_existing_target() {
+  local target_id="$1"
+  [[ -n "$target_id" ]] || return 1
+  curl -fsS "http://127.0.0.1:${DEBUG_PORT}/json/activate/${target_id}" >/dev/null 2>&1 || return 1
+  return 0
+}
+
 record_preferred_target_for_url() {
   local target_url="$1"
   local payload
@@ -196,7 +273,13 @@ if [[ -z "$chrome_bin" && "$(platform)" != "windows" ]]; then
 fi
 
 if ensure_endpoint_owned_by_dedicated_profile >/dev/null; then
-  open_tab_on_dedicated_instance "$START_URL"
+  existing_target_id="$(find_matching_target_for_url "$START_URL")"
+  if [[ -n "${existing_target_id:-}" ]]; then
+    activate_existing_target "$existing_target_id" || true
+    close_duplicate_targets_for_url "$START_URL" "$existing_target_id"
+  else
+    open_tab_on_dedicated_instance "$START_URL"
+  fi
   record_preferred_target_for_url "$START_URL"
   echo "$DEBUG_URL"
   exit 0

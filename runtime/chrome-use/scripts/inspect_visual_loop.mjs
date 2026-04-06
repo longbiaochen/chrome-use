@@ -212,15 +212,18 @@ async function readToolbarMetrics(runtime, sessionState) {
     }
     const status = toolbar.querySelector('[data-role="status"]');
     const inspectButton = toolbar.querySelector('button[data-role="inspect"]');
-    const exitButton = toolbar.querySelector('button[data-role="exit"]');
+    const closeButton = toolbar.querySelector('button[data-role="close"]');
+    const selectionCard = toolbar.querySelector('[data-role="selection-card"]');
+    const selectionHeading = toolbar.querySelector('[data-role="selection-heading"]');
+    const selectionSummary = toolbar.querySelector('[data-role="selection-summary"]');
     const toolbarRect = toolbar.getBoundingClientRect();
     const statusRect = status.getBoundingClientRect();
     const inspectRect = inspectButton.getBoundingClientRect();
-    const exitRect = exitButton.getBoundingClientRect();
+    const closeRect = closeButton.getBoundingClientRect();
     const toolbarStyle = getComputedStyle(toolbar);
     const statusStyle = getComputedStyle(status);
     const inspectStyle = getComputedStyle(inspectButton);
-    const exitStyle = getComputedStyle(exitButton);
+    const closeStyle = getComputedStyle(closeButton);
     return {
       present: true,
       url: location.href,
@@ -246,16 +249,21 @@ async function readToolbarMetrics(runtime, sessionState) {
         top: inspectRect.top,
         backgroundColor: inspectStyle.backgroundColor,
         active: inspectButton.dataset.active || null,
+        text: inspectButton.textContent.trim(),
       },
-      exitButton: {
-        width: exitRect.width,
-        height: exitRect.height,
-        top: exitRect.top,
-        backgroundColor: exitStyle.backgroundColor,
-        active: exitButton.dataset.active || null,
+      closeButton: {
+        width: closeRect.width,
+        height: closeRect.height,
+        top: closeRect.top,
+        backgroundColor: closeStyle.backgroundColor,
+      },
+      selectionCard: {
+        display: selectionCard ? getComputedStyle(selectionCard).display : "none",
+        heading: selectionHeading ? selectionHeading.textContent.trim() : "",
+        summary: selectionSummary ? selectionSummary.textContent.trim() : "",
       },
       layout: {
-        buttonsWrap: Math.abs(inspectRect.top - exitRect.top) > 1,
+        buttonsWrap: Math.abs(inspectRect.top - closeRect.top) > 1,
         toolbarCompact: toolbarRect.height <= 44,
       },
     };
@@ -292,6 +300,8 @@ function selectTargetSession(runtime, urlFragment) {
 function assertToolbarMetrics(metrics, {
   expectedState,
   expectedText,
+  expectedButtonText,
+  expectedSelectionCard = false,
 } = {}) {
   assertCondition(metrics?.present, "Toolbar is missing.", metrics);
   if (expectedState) {
@@ -300,13 +310,33 @@ function assertToolbarMetrics(metrics, {
   if (expectedText) {
     assertCondition(metrics.statusText === expectedText, `Toolbar text mismatch: expected "${expectedText}", got "${metrics.statusText}".`, metrics);
   }
+  if (expectedButtonText) {
+    assertCondition(
+      metrics.inspectButton.text === expectedButtonText,
+      `Toolbar button mismatch: expected "${expectedButtonText}", got "${metrics.inspectButton.text}".`,
+      metrics,
+    );
+  }
+  if (expectedSelectionCard) {
+    assertCondition(metrics.selectionCard.display !== "none", "Selection summary card is hidden.", metrics);
+    assertCondition(
+      metrics.selectionCard.heading === "Selected and saved. Return to the agent.",
+      `Selection heading mismatch: got "${metrics.selectionCard.heading}".`,
+      metrics,
+    );
+    assertCondition(metrics.selectionCard.summary.length > 0, "Selection summary is empty.", metrics);
+  } else {
+    assertCondition(metrics.selectionCard.display === "none", "Selection summary card should be hidden.", metrics);
+  }
   assertCondition(metrics.toolbar.top <= 20, "Toolbar is not pinned near the top edge.", metrics);
   assertCondition(metrics.toolbar.rightInset <= 32, "Toolbar is not pinned near the right edge.", metrics);
   assertCondition(metrics.layout.toolbarCompact, "Toolbar is taller than the compact layout budget.", metrics);
-  assertCondition(metrics.toolbar.scrollHeight <= metrics.toolbar.height + 1, "Toolbar content overflowed vertically.", metrics);
+  if (!expectedSelectionCard) {
+    assertCondition(metrics.toolbar.scrollHeight <= metrics.toolbar.height + 1, "Toolbar content overflowed vertically.", metrics);
+  }
   assertCondition(metrics.status.whiteSpace === "nowrap", "Toolbar status is not constrained to a single line.", metrics);
   assertCondition(metrics.status.overflow === "hidden", "Toolbar status does not clip overflow.", metrics);
-  assertCondition(metrics.inspectButton.width > metrics.exitButton.width, "Inspect button is not visually primary.", metrics);
+  assertCondition(metrics.inspectButton.width > metrics.closeButton.width, "Inspect button is not visually primary.", metrics);
   assertCondition(!metrics.layout.buttonsWrap, "Toolbar buttons wrapped onto multiple rows.", metrics);
 }
 
@@ -370,13 +400,15 @@ async function main() {
     results.push(await recordStep(runtime, sessionState, outputDir, "01-initial-inspecting", {
       expectedState: "inspecting",
       expectedText: "Inspect mode active",
+      expectedButtonText: "Exit Inspector",
     }));
 
     logStep("Clicking Exit");
-    await clickSelector(runtime, sessionState, '[data-chrome-inspect-toolbar] button[data-role="exit"]');
+    await clickSelector(runtime, sessionState, '[data-chrome-inspect-toolbar] button[data-role="inspect"]');
     results.push(await recordStep(runtime, sessionState, outputDir, "02-exited", {
       expectedState: "exited",
       expectedText: "Inspect exited",
+      expectedButtonText: "Inspector",
     }));
 
     logStep("Reloading page while exited");
@@ -384,6 +416,7 @@ async function main() {
     results.push(await recordStep(runtime, sessionState, outputDir, "03-exited-after-reload", {
       expectedState: "exited",
       expectedText: "Inspect exited",
+      expectedButtonText: "Inspector",
     }));
 
     logStep("Re-entering inspect mode");
@@ -391,6 +424,7 @@ async function main() {
     results.push(await recordStep(runtime, sessionState, outputDir, "04-inspecting-again", {
       expectedState: "inspecting",
       expectedText: "Inspect mode active",
+      expectedButtonText: "Exit Inspector",
     }));
 
     logStep("Triggering same-document navigation");
@@ -398,6 +432,7 @@ async function main() {
     results.push(await recordStep(runtime, sessionState, outputDir, "05-same-document-inspecting", {
       expectedState: "inspecting",
       expectedText: "Inspect mode active",
+      expectedButtonText: "Exit Inspector",
     }));
 
     logStep("Selecting the fixture target");
@@ -409,9 +444,14 @@ async function main() {
       timeoutMs: 6000,
     }, 2);
     assertCondition(awaited?.phase === "awaiting_user_instruction", "Expected a completed selection payload.", awaited);
+    assertCondition(Boolean(awaited?.selectionHistoryPath), "Expected selection history path in await payload.", awaited);
+    const firstHistory = await readFile(awaited.selectionHistoryPath, "utf8");
+    assertCondition(firstHistory.trim().length > 0, "Selection history file is empty after first capture.");
     results.push(await recordStep(runtime, sessionState, outputDir, "06-selected", {
       expectedState: "idle_selected",
-      expectedText: "Element selected",
+      expectedText: "Selected and saved",
+      expectedButtonText: "Inspector",
+      expectedSelectionCard: true,
     }));
 
     logStep("Navigating to the second fixture page");
@@ -419,29 +459,52 @@ async function main() {
     sessionState = await waitFor(async () => selectTargetSession(runtime, `${fixtureServer.origin}/next.html`), 8000, "next page target");
     results.push(await recordStep(runtime, sessionState, outputDir, "07-selected-after-navigation", {
       expectedState: "idle_selected",
-      expectedText: "Element selected",
+      expectedText: "Selected and saved",
+      expectedButtonText: "Inspector",
+      expectedSelectionCard: true,
     }));
 
     logStep("Triggering same-document navigation on the second page");
     await clickSelector(runtime, sessionState, "#fixture-notes-link");
     results.push(await recordStep(runtime, sessionState, outputDir, "08-selected-after-hash-nav", {
       expectedState: "idle_selected",
-      expectedText: "Element selected",
+      expectedText: "Selected and saved",
+      expectedButtonText: "Inspector",
+      expectedSelectionCard: true,
+    }));
+
+    logStep("Re-entering inspect mode without a workflow");
+    await clickSelector(runtime, sessionState, '[data-chrome-inspect-toolbar] button[data-role="inspect"]');
+    results.push(await recordStep(runtime, sessionState, outputDir, "09-manual-reenter-inspecting", {
+      expectedState: "inspecting",
+      expectedText: "Inspect mode active",
+      expectedButtonText: "Exit Inspector",
+    }));
+
+    logStep("Selecting a target without creating a workflow");
+    await clickSelector(runtime, sessionState, ".panel");
+    results.push(await recordStep(runtime, sessionState, outputDir, "10-manual-reenter-selected", {
+      expectedState: "idle_selected",
+      expectedText: "Selected and saved",
+      expectedButtonText: "Inspector",
+      expectedSelectionCard: true,
     }));
 
     logStep("Starting a new capture on the second page");
     const secondBegin = await handleInspectAction(runtime.cdp, runtime.state, { action: "begin_capture" }, 3);
     assertCondition(Boolean(secondBegin?.workflowId), "Expected second capture workflow.", secondBegin);
-    results.push(await recordStep(runtime, sessionState, outputDir, "09-second-capture-armed", {
+    results.push(await recordStep(runtime, sessionState, outputDir, "11-second-capture-armed", {
       expectedState: "inspecting",
       expectedText: "Inspect mode active",
+      expectedButtonText: "Exit Inspector",
     }));
 
     logStep("Validating narrow viewport layout");
     await setViewport(runtime, sessionState, 360, 800);
-    results.push(await recordStep(runtime, sessionState, outputDir, "10-narrow-viewport", {
+    results.push(await recordStep(runtime, sessionState, outputDir, "12-narrow-viewport", {
       expectedState: "inspecting",
       expectedText: "Inspect mode active",
+      expectedButtonText: "Exit Inspector",
     }));
     await clearViewport(runtime, sessionState);
 
@@ -454,9 +517,14 @@ async function main() {
       timeoutMs: 6000,
     }, 4);
     assertCondition(secondAwaited?.phase === "awaiting_user_instruction", "Expected a completed second selection payload.", secondAwaited);
-    results.push(await recordStep(runtime, sessionState, outputDir, "11-second-selected", {
+    assertCondition(Boolean(secondAwaited?.selectionHistoryPath), "Expected selection history path in second await payload.", secondAwaited);
+    const secondHistory = await readFile(secondAwaited.selectionHistoryPath, "utf8");
+    assertCondition(secondHistory.trim().split("\n").length >= 2, "Selection history did not append a second record.");
+    results.push(await recordStep(runtime, sessionState, outputDir, "13-second-selected", {
       expectedState: "idle_selected",
-      expectedText: "Element selected",
+      expectedText: "Selected and saved",
+      expectedButtonText: "Inspector",
+      expectedSelectionCard: true,
     }));
 
     logStep("Clearing the workflow");
@@ -466,9 +534,11 @@ async function main() {
       instruction: "Visual validation complete.",
     }, 5);
     assertCondition(apply?.phase === "ready_to_apply", "Expected apply_instruction to complete.", apply);
-    results.push(await recordStep(runtime, sessionState, outputDir, "12-toolbar-after-apply", {
+    results.push(await recordStep(runtime, sessionState, outputDir, "14-toolbar-after-apply", {
       expectedState: "idle_selected",
-      expectedText: "Element selected",
+      expectedText: "Selected and saved",
+      expectedButtonText: "Inspector",
+      expectedSelectionCard: true,
     }));
 
     process.stdout.write(`${JSON.stringify({
