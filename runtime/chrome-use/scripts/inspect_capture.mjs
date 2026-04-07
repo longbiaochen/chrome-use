@@ -24,6 +24,7 @@ function printUsage() {
   console.error(`Usage:
   inspect-capture begin --project-root <path> [--url <url>]
   inspect-capture await --workflow-id <id> [--timeout-ms <ms>]
+  inspect-capture latest
   inspect-capture apply --workflow-id <id> --instruction "<text>"
   inspect-capture once --project-root <path> [--timeout-ms <ms>] [--url <url>]`);
 }
@@ -57,6 +58,85 @@ function readJsonIfPresent(filePath) {
   } catch {
     return null;
   }
+}
+
+function readLatestSelectionHistoryEntry(store) {
+  if (!existsSync(store.selectionHistoryPath)) {
+    return null;
+  }
+  try {
+    const history = readFileSync(store.selectionHistoryPath, "utf8");
+    const lines = history
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    for (let idx = lines.length - 1; idx >= 0; idx -= 1) {
+      try {
+        const candidate = JSON.parse(lines[idx]);
+        if (candidate?.payload?.selectedElement) {
+          return candidate;
+        }
+      } catch {
+        // Ignore malformed history rows and continue scanning backward.
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function readLatestPersistedSelection(store) {
+  const currentSelection = readJsonIfPresent(store.currentSelectionPath);
+  if (currentSelection?.payload?.selectedElement) {
+    return currentSelection;
+  }
+  return readLatestSelectionHistoryEntry(store);
+}
+
+function summarizePersistedSelection(selection) {
+  const payload = selection?.payload;
+  if (!payload?.selectedElement) {
+    return null;
+  }
+  const selector =
+    payload.selectedElement.selectorHint ||
+    payload.selectedElement.descriptionText ||
+    payload.selectedElement.nodeName ||
+    "element";
+  const pageUrl = payload.page?.url || "(no url)";
+  return `${selector} on ${pageUrl}`;
+}
+
+function toCliSelectionPayloadFromPersisted(selection, store) {
+  const payload = selection?.payload;
+  if (!payload?.selectedElement) {
+    return null;
+  }
+  return {
+    workflowId: selection.workflowId || null,
+    observedAt: payload.observedAt || null,
+    summary: selection.summary || summarizePersistedSelection(selection),
+    selectionHistoryPath: store.selectionHistoryPath,
+    page: {
+      url: payload.page?.url || null,
+      title: payload.page?.title || null,
+    },
+    selectedElement: {
+      nodeName: payload.selectedElement?.nodeName || null,
+      selectorHint: payload.selectedElement?.selectorHint || null,
+      id: payload.selectedElement?.id || "",
+      className: payload.selectedElement?.className || "",
+      ariaLabel: payload.selectedElement?.ariaLabel || "",
+      snippet: payload.selectedElement?.snippet || "",
+    },
+    position: {
+      x: payload.position?.x ?? null,
+      y: payload.position?.y ?? null,
+      width: payload.position?.width ?? null,
+      height: payload.position?.height ?? null,
+    },
+  };
 }
 
 function fetchJson(url) {
@@ -147,7 +227,7 @@ function ensureCommandRequirements(command, flags) {
   if (command === "apply" && !flags.instruction) {
     throw new Error("inspect-capture apply requires --instruction.");
   }
-  if (!["begin", "await", "apply", "once", "__daemon"].includes(command)) {
+  if (!["begin", "await", "latest", "apply", "once", "__daemon"].includes(command)) {
     throw new Error(`Unsupported inspect-capture subcommand: ${command}`);
   }
 }
@@ -509,6 +589,21 @@ async function main() {
   let startupUrl = explicitUrl;
   let debugUrl = explicitDebugUrl;
 
+  if (command === "latest") {
+    const latestUrl = new URL(explicitDebugUrl);
+    const latestStore = createInspectStore({
+      debugHost: latestUrl.hostname,
+      debugPort: latestUrl.port || "80",
+    });
+    const latest = readLatestPersistedSelection(latestStore);
+    const payload = toCliSelectionPayloadFromPersisted(latest, latestStore);
+    if (!payload) {
+      throw new Error("There is no persisted inspect selection yet. Run begin_capture/await_selection first.");
+    }
+    process.stdout.write(`${JSON.stringify(payload)}\n`);
+    return;
+  }
+
   if (command === "begin" || command === "once") {
     const resolved = resolveAndOpenTarget({ scriptDir, projectRoot, explicitUrl });
     startupUrl = resolved.startupUrl;
@@ -541,13 +636,11 @@ async function main() {
       timeoutMs: Number.isFinite(timeoutMs) ? timeoutMs : 0,
       waitForSelectionMs: 500,
     };
+    let handle;
     try {
-      const handle = await ensureRuntimeServer({ scriptPath, store, debugUrl, startupUrl });
-      const result = await sendRuntimeCommand(handle, "await_selection", args);
-      process.stdout.write(`${JSON.stringify(toCliSelectionPayload(result))}\n`);
-      return;
+      handle = await ensureRuntimeServer({ scriptPath, store, debugUrl, startupUrl });
     } catch (err) {
-      logSignal("runtime_reconnect_fallback", {
+      logSignal("runtime_startup_fallback", {
         command: "await_selection",
         error: err?.message || String(err),
       });
@@ -560,6 +653,9 @@ async function main() {
       process.stdout.write(`${JSON.stringify(toCliSelectionPayload(result))}\n`);
       return;
     }
+    const result = await sendRuntimeCommand(handle, "await_selection", args);
+    process.stdout.write(`${JSON.stringify(toCliSelectionPayload(result))}\n`);
+    return;
   }
 
   if (command === "apply") {

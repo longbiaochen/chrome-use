@@ -29,8 +29,8 @@
 - If `CHROME_INSPECT_AUTO_START_WEBAPP=1` and `CHROME_INSPECT_PROJECT_ROOT` are set, `runtime/chrome-use/scripts/open_url.sh` should auto-start the local project web app before attaching Chrome.
 - If inspect auto-start is enabled and `CHROME_INSPECT_PROJECT_ROOT` is unset, the shared runtime should infer the local project root from the current working directory or git root before falling back.
 - When the expected local preview port is already listening but the target URL is unreachable, fail fast with the listener details instead of trying to start a second web server.
-- `/chrome-inspect` toolbar contract: default to active inspect mode (`Exit Inspector` shown), auto-exit to `Inspector` after a successful selection, and keep the toolbar resident across same-tab navigation/reload/hash navigation.
-- In exited or saved-selection state, a single `Inspector` click should immediately re-enter inspect mode even before starting a new capture workflow.
+- `/chrome-inspect` panel contract: default to injected idle state with primary action `Press this button to inspect`, switch to `Inspecting` only after the operator clicks the button, and keep the panel resident across same-tab navigation/reload/hash navigation.
+- In idle or saved-selection state, a single `Press this button to inspect` click should immediately re-enter inspect mode even before starting a new capture workflow.
 - Persist selection trail in `events/selection-history.jsonl` in addition to `events/current-selection.json`.
 - Preferred client flow is `scripts/inspect-capture begin ...` followed by `scripts/inspect-capture await ...` in the same turn; use immediate-return fallback only when long-running tool waits are not viable.
 - On macOS, open or reuse the dedicated Chrome profile in the background so MCP startup does not steal user focus.

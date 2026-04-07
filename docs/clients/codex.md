@@ -59,12 +59,15 @@ Recommended verification for public skills:
 7. The client calls `scripts/inspect-capture await --workflow-id "<workflowId>"`.
 8. Treat the result as valid only if it belongs to the current `workflowId` and follows a fresh click for the current capture cycle.
    If `await_selection` appears to return immediately with stale prior context, restart capture instead of presenting it as the new selection.
-9. Confirm the agent does not conclude the turn before the tool returns `phase=awaiting_user_instruction`.
-10. Confirm the agent reports enough selected-element detail after `phase=awaiting_user_instruction`:
+9. For a later-turn "latest selection" recovery request, call `scripts/inspect-capture latest`.
+   Do not reuse an earlier turn's cached `workflowId` to answer "latest".
+   This should be handled as a local file read, not a fresh browser/runtime attach and not a new preview lookup.
+10. Confirm the agent does not conclude the turn before the tool returns `phase=awaiting_user_instruction`.
+11. Confirm the agent reports enough selected-element detail after `phase=awaiting_user_instruction`:
    `summary`, `workflowId`, tag / `selectedElement.nodeName`, `selectedElement.selectorHint`,
    `selectedElement.id`, `selectedElement.className`, `selectedElement.ariaLabel`, page URL,
    `position`, and the element content from `selectedElement.snippet` or equivalent captured text.
-11. Reply with a concrete edit instruction.
-12. Confirm returned `phase=ready_to_apply` after `scripts/inspect-capture apply --workflow-id "<workflowId>" --instruction "<user instruction>"`.
+12. Reply with a concrete edit instruction.
+13. Confirm returned `phase=ready_to_apply` after `scripts/inspect-capture apply --workflow-id "<workflowId>" --instruction "<user instruction>"`.
 
 For `/chrome-auth`, send the explicit auth URL and then use `scripts/auth-cdp` for login/authorization actions while keeping the same dedicated profile, debug endpoint, and single dedicated Chrome window.

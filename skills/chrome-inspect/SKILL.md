@@ -22,15 +22,18 @@ Use this skill when an agent needs deterministic, inspect-first Chrome DOM work 
 5. Use the direct-CDP inspect CLI for selection capture by default:
    - `scripts/inspect-capture begin --project-root "<repo>"`
    - `scripts/inspect-capture await --workflow-id "<workflowId>"`
+   - `scripts/inspect-capture latest` when a later turn asks for the most recent saved selection
+     This is a local fast path: read the persisted latest selection directly and skip browser attach, startup URL resolution, repo lookup, and any extra search flow.
    - or the one-shot path: `scripts/inspect_select_element.sh "<repo>"`
 6. Ensure the session is attached to the dedicated debug endpoint and that the dedicated profile still has exactly one Chrome window.
 7. The direct inspect runtime should pass the startup URL into the shared runtime so capture prioritizes the freshly opened target instead of attaching unrelated tabs on the same debug endpoint.
 8. Confirm inspect mode is armed, then have the user use the persistent page toolbar to click a target in Chrome.
    The toolbar is expected to stay injected across reloads, page navigation, and every page tab in the same dedicated profile.
-   On entry, the toolbar should already be active and the primary action should read `Exit Inspector`.
-   A successful click should automatically exit inspect mode, leave the toolbar visible, switch the primary action back to `Inspector`, and return the page to normal interaction so links and navigation work immediately.
-   The toolbar should also show a short saved-selection card under the controls so the user can see what was selected and know it was persisted.
-   If the operator clicks `Inspector` after exit, inspect mode should re-enter immediately, even if no new capture workflow has been created yet.
+   On entry, the toolbar should already be injected in the idle ready state, with the primary action labeled `Press this button to inspect`.
+   Only after the operator clicks that primary action should the toolbar enter active inspect mode and show `Inspecting`.
+   A successful click should automatically exit inspect mode, leave the panel visible, switch the primary action back to `Press this button to inspect`, and return the page to normal interaction so links and navigation work immediately.
+   The saved-selection portion should be part of the same panel, not a separate tooltip, and should show `Selected`, `Content`, `Page`, and `Element`.
+   If the operator clicks `Press this button to inspect` after selection or idle state, inspect mode should re-enter immediately, even if no new capture workflow has been created yet.
 9. Treat the selection as valid only if it is clearly for the current `workflowId` and follows a fresh operator click for this capture cycle.
    If `await_selection` appears to return immediately with stale prior context, or the durable files only show an older `updatedAt` / `payload.observedAt`, do not present it as the new selection. Restart capture or create a fresh workflow and retry.
 10. Do not return a final response, a completion summary, or a "Worked for ..." timeout-style message before receiving a fresh `phase=awaiting_user_instruction` or equivalent fresh `selection_received` payload for the current capture cycle.
@@ -49,17 +52,19 @@ Use this skill when an agent needs deterministic, inspect-first Chrome DOM work 
 13. Re-run the same workflow with `scripts/inspect-capture apply --workflow-id "<workflowId>" --instruction "<user text>"`.
 14. Treat `apply` as ending the capture workflow only.
     It should not remove the toolbar from the page; the toolbar stays resident in the dedicated profile and the next capture will re-arm inspect mode.
+15. For a later-turn "what is the latest selection?" recovery request, do not reuse an older cached `workflowId`.
+    Call `scripts/inspect-capture latest` so the reply is sourced from the persisted most recent successful selection.
+    Do not open Chrome, resolve the preview URL, attach runtime sessions, or search the repo for this recovery path.
 
 ## Toolbar behavior
 
 - The toolbar is persistent across same-tab navigation, reloads, and same-document navigation.
-- Every page tab in the dedicated profile should receive the toolbar. Inspect-started tabs should enter active inspect mode immediately; non-inspect tabs should stay injected in the idle `Inspector` state until the operator or runtime activates inspect mode there.
+- Every page tab in the dedicated profile should receive the same injected panel in the idle ready state by default; no tab should auto-enter inspect mode just because it was opened or injected.
 - The primary action is a toggle:
-  - `Exit Inspector` while inspect mode is active
-  - `Inspector` after manual exit or after a completed selection
+  - `Inspecting` while inspect mode is active
+  - `Press this button to inspect` in idle or after a completed selection
 - A successful selection must be persisted so later turns can recover it if the original wait timed out.
 - Selection history should be appended to `events/selection-history.jsonl`, not just overwritten in `current-selection.json`.
-- A small `×` close affordance may be present to hide the toolbar temporarily when it blocks page content; it is not the main inspect-mode exit control.
 - Manual re-entry into inspect mode should work on the first click, not require a double click.
 - When no explicit URL is provided for a fresh inspect cycle, prefer the current latest page tab instead of older attached tabs on the same debug endpoint.
 
@@ -103,7 +108,7 @@ Expected result:
 - no manual bridge handshake
 - no repo-wide discovery step when `project_webapp_entry.sh` already resolves the preview URL
 - successful selection automatically exits inspect mode while keeping the toolbar visible
-- the toolbar toggle should read `Exit Inspector` while active and `Inspector` after exit or selection
+- the toolbar should default to `Press this button to inspect`, switch the primary action to `Inspecting` only after the user clicks it, and return to `Press this button to inspect` after selection while showing `Selected`, `Content`, `Page`, and `Element`
 - manual re-entry into inspect mode should be immediate and single-click
 
 ## Notes

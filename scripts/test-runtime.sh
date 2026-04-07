@@ -187,6 +187,17 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  local needle="$1"
+  local haystack="$2"
+  local label="$3"
+  if [[ "$haystack" == *"$needle"* ]]; then
+    log_fail "$label: did not expect to find '$needle'"
+  else
+    log_ok "$label"
+  fi
+}
+
 assert_file_lines() {
   local file="$1"
   local expected="$2"
@@ -501,6 +512,46 @@ EOF
   assert_contains "runtime/chrome-use/scripts/auth_cdp.mjs status" "$node_args" "auth-cdp wrapper delegates to shared runtime"
 }
 
+test_inspect_capture_latest_reads_persisted_selection_without_runtime() {
+  setup_case
+  local scope_dir="$CHROME_USE_STATE_DIR/inspect/127.0.0.1-9223"
+  mkdir -p "$scope_dir/events"
+  cat >"$scope_dir/events/current-selection.json" <<'EOF'
+{
+  "workflowId": "wf-latest",
+  "payload": {
+    "observedAt": "2026-04-07T02:00:00.000Z",
+    "page": {
+      "url": "http://127.0.0.1:8000/next.html",
+      "title": "Next"
+    },
+    "selectedElement": {
+      "nodeName": "DIV",
+      "selectorHint": "#latest-panel",
+      "id": "latest-panel",
+      "className": "panel current",
+      "ariaLabel": "Latest panel",
+      "snippet": "<div id=\"latest-panel\">Latest</div>"
+    },
+    "position": {
+      "x": 10,
+      "y": 20,
+      "width": 30,
+      "height": 40
+    }
+  }
+}
+EOF
+
+  local output
+  output="$(node "$RUNTIME_ROOT/scripts/inspect_capture.mjs" latest --browser-url "http://127.0.0.1:9223")"
+
+  assert_contains '"workflowId":"wf-latest"' "$output" "inspect-capture latest returns persisted workflow id"
+  assert_contains '"url":"http://127.0.0.1:8000/next.html"' "$output" "inspect-capture latest returns persisted page url"
+  assert_contains '"selectorHint":"#latest-panel"' "$output" "inspect-capture latest returns persisted selector"
+  assert_contains '"selectionHistoryPath":"' "$output" "inspect-capture latest exposes selection history path"
+}
+
 test_inspect_runtime_source_tracks_navigation_rearm() {
   local runtime_source
   runtime_source="$(cat "$RUNTIME_ROOT/scripts/inspect_runtime.mjs")"
@@ -516,13 +567,31 @@ test_inspect_runtime_source_tracks_navigation_rearm() {
   assert_contains "applyToolbarStateToAllTargets" "$runtime_source" "inspect runtime keeps toolbar resident across workflow transitions"
   assert_contains "reconcilePageTargets" "$runtime_source" "inspect runtime reconciles page targets beyond target-created events"
   assert_contains "Target.getTargets" "$runtime_source" "inspect runtime refreshes target inventory through the target domain"
-  assert_contains "\"Inspect mode active\"" "$runtime_source" "inspect runtime exposes compact inspecting label"
-  assert_contains "\"Selected and saved\"" "$runtime_source" "inspect runtime exposes saved selection label"
-  assert_contains "\"Inspect exited\"" "$runtime_source" "inspect runtime exposes compact exited label"
-  assert_contains "\"Exit Inspector\"" "$runtime_source" "inspect runtime exposes exit action while inspect mode is active"
-  assert_contains "\"Inspector\"" "$runtime_source" "inspect runtime exposes inspector re-entry action after exit"
-  assert_contains "toolbar_dismissed" "$runtime_source" "inspect runtime exposes toolbar dismissal signal"
+  assert_contains "toolbarState === states.idleSelected" "$runtime_source" "inspect runtime handles idle-selected toolbar state"
+  assert_contains "toolbarState === states.exited" "$runtime_source" "inspect runtime handles exited toolbar state"
+  assert_contains "toolbarState === states.inspecting" "$runtime_source" "inspect runtime handles inspecting toolbar state"
+  assert_contains "state.toolbarToggleButton.querySelector(\"span\").textContent = isInspecting" "$runtime_source" "inspect runtime toggles primary action label by inspect state"
+  assert_contains "\"Inspecting\"" "$runtime_source" "inspect runtime exposes active inspect label"
+  assert_contains "\"Press this button to inspect\"" "$runtime_source" "inspect runtime exposes idle inspect action"
+  assert_contains "<span data-role=\"label\">Selected</span>" "$runtime_source" "inspect runtime exposes selected summary section"
+  assert_contains "<span data-role=\"label\">Content</span>" "$runtime_source" "inspect runtime exposes content section"
+  assert_contains "<span data-role=\"label\">Page</span>" "$runtime_source" "inspect runtime exposes unified panel page section"
+  assert_contains "<span data-role=\"label\">Element</span>" "$runtime_source" "inspect runtime exposes element path section"
+  assert_contains "elementPath" "$runtime_source" "inspect runtime derives element tree paths for toolbar display"
+  assert_contains "selection_ignored_for_inactive_workflow" "$runtime_source" "inspect runtime ignores stale selections from other workflows"
+  assert_contains "status: \"selection_received\"" "$runtime_source" "inspect runtime persists active workflow selection immediately"
   assert_contains "selection-history.jsonl" "$runtime_source" "inspect runtime persists selection history as JSONL"
+  assert_contains "\"get_latest_selection\"" "$runtime_source" "inspect runtime exposes latest persisted selection recovery"
+  assert_contains "readLatestPersistedSelection" "$runtime_source" "inspect runtime reads latest persisted selection outside workflow state"
+}
+
+test_inspect_capture_await_prefers_daemon_wait() {
+  local capture_source
+  capture_source="$(cat "$RUNTIME_ROOT/scripts/inspect_capture.mjs")"
+
+  assert_contains "runtime_startup_fallback" "$capture_source" "inspect capture await only falls back when daemon startup fails"
+  assert_not_contains $'logSignal("runtime_reconnect_fallback", {\n        command: "await_selection"' "$capture_source" "inspect capture await no longer reconnect-falls-back after wait starts"
+  assert_contains "const result = await sendRuntimeCommand(handle, \"await_selection\", args);" "$capture_source" "inspect capture await keeps a single long-lived daemon request"
 }
 
 test_visual_loop_assets_exist() {
@@ -561,7 +630,9 @@ main() {
   test_reuses_reachable_project_webapp_listener
   test_inspect_capture_wrapper_targets_shared_runtime
   test_auth_cdp_wrapper_targets_shared_runtime
+  test_inspect_capture_latest_reads_persisted_selection_without_runtime
   test_inspect_runtime_source_tracks_navigation_rearm
+  test_inspect_capture_await_prefers_daemon_wait
   test_visual_loop_assets_exist
 
   if [[ "$failures" -gt 0 ]]; then

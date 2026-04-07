@@ -1,23 +1,85 @@
 # chrome-use
 
-`chrome-use` is the repository and shared runtime for two public browser skills:
+> ⚡ ChromeUse is a fast browser skill set for coding agents.
+> It runs Chrome through a dedicated agent profile, keeps a long-lived remote-debugging session open, and exposes two public skills:
+> `chrome-inspect` and `chrome-auth`.
+
+## 🚀 Milestone: Chrome Inspector shipped
+
+ChromeUse now has a complete Chrome Inspector workflow for agent + operator collaboration on live pages:
+
+- one dedicated `agent-profile`, separate from your default Chrome profile
+- direct Chrome DevTools Protocol (CDP) control over a remote-debuggable Chrome instance
+- a persistent in-page inspect panel that survives reloads, same-tab navigation, and same-document navigation
+- a `begin -> await -> apply` workflow that returns mutation-ready DOM context
+- a `latest` fast path for recovering the most recent saved selection without reopening Chrome
+- companion auth flows through `chrome-auth`, so login and inspection live in the same dedicated browser session
+
+This repo is opinionated on purpose: it is not a generic browser MCP wrapper. It is a skill set designed for fast, repeatable, local-first browser work with a human in the loop.
+
+## ✨ Why ChromeUse feels different
+
+### `chrome-inspect`
+
+- click-to-capture inspect workflow for real pages
+- first click completes the active workflow immediately
+- persistent panel with a single primary action and saved selection context
+- returns `selectedElement`, `position`, `page`, `summary`, and element content for downstream DOM mutation
+- built for agent turns that need precise UI context, not just screenshots or text dumps
+
+### `chrome-auth`
+
+- operator-driven login and authorization in the same dedicated browser
+- keeps cookies, sessions, and local storage inside the dedicated agent profile
+- lets the agent navigate, inspect status, screenshot, click, type, and continue work after auth is done
+
+## 🧠 Architecture
+
+ChromeUse uses a dedicated browser runtime instead of your normal Chrome session:
+
+- dedicated profile dir: `~/.chrome-use/agent-profile`
+- dedicated state dir: `~/.chrome-use/state`
+- dedicated debug endpoint: `http://127.0.0.1:9223`
+- dedicated remote debugging session over CDP
+
+That design matters:
+
+- your default Chrome profile stays untouched
+- auth state is stable and reusable across turns
+- inspect and auth share the same browser session
+- agents can keep a fast, low-overhead connection instead of repeatedly booting new browsers
+- the runtime can route selections and workflow state deterministically by `workflowId` and `captureToken`
+
+On macOS, the launcher keeps the dedicated Chrome instance in the background so agent activity does not steal focus. The dedicated `agent-profile` must remain a single-window Chrome instance; other Chrome windows under other profiles are allowed.
+
+## 🥊 Where ChromeUse fits
+
+ChromeUse is best understood as an opinionated skill layer on top of Chrome itself.
+
+| Tool | What it is great at | Where ChromeUse is stronger |
+| --- | --- | --- |
+| Chrome DevTools MCP | General-purpose browser debugging, automation, traces, network, console, screenshots | ChromeUse adds an inspect-first operator workflow, persistent in-page panel UX, dedicated profile discipline, and mutation-ready selection handoff |
+| `agent-browser` | Fast CLI automation and accessibility/snapshot-driven browser control | ChromeUse is stronger when an operator needs to point at a live DOM target and hand exact page context back to an agent |
+| `browser-use` | High-level browser agents, cloud/browser infrastructure, and broad automation frameworks | ChromeUse is leaner and more local-first for coding-agent workflows that need precise inspection, persistent auth, and minimal runtime indirection |
+
+ChromeUse is intentionally narrower than those tools. That narrowness is the advantage: it is optimized for live inspect/edit/auth loops instead of trying to be every browser tool at once.
+
+## 📦 Public skills
+
+Only two public skill names are surfaced by design:
 
 - `chrome-inspect`
 - `chrome-auth`
 
-Only two public skill names are surfaced by design:
+`chrome-use` itself is not exposed as a standalone skill or command. `/chrome` and `/inspect` are intentionally unavailable as standalone selectors.
 
-- `/chrome-inspect`
-- `/chrome-auth`
+For `chrome-inspect`, the launcher can auto-start a detected local project web app before opening Chrome when `CHROME_INSPECT_PROJECT_ROOT` is set or when the current working directory or git root can be inferred as the local project.
 
-`/chrome` and `/inspect` are intentionally unavailable as standalone commands.
+Both public skills may be invoked explicitly or implicitly.
 
-- `/chrome-inspect` captures selected DOM context in a dedicated profile and returns a mutation-ready inspect workflow.
-- `/chrome-auth` handles operator-driven login/authorization flows while keeping session state on the dedicated profile.
-- For `/chrome-inspect`, the launcher can auto-start a detected local project web app before opening Chrome when `CHROME_INSPECT_PROJECT_ROOT` is set or when the current working directory or git root can be inferred as the local project.
-- Both public skills may be invoked explicitly or implicitly.
+## 📝 Release note
 
-On macOS, the launcher keeps Chrome in the background when opening or reusing the dedicated profile so agent activity does not pull the window frontmost. The dedicated `agent-profile` must remain a single-window Chrome instance; other Chrome windows under other profiles are allowed.
+- [Chrome Inspector milestone release notes](./docs/releases/chrome-inspector-milestone.md)
 
 ## Fast install
 
@@ -144,11 +206,12 @@ For `/chrome-inspect` default flow, send:
    If the dedicated profile is already running, the command reuses it by opening a new tab there instead of creating another dedicated window.
 3. Start capture with `scripts/inspect-capture begin --project-root "<repo>"` and store the returned `workflowId`.
 4. Confirm inspect mode is armed, then click the target element in Chrome.
-   The page toolbar should already be in active inspect mode on entry, with the primary action labeled `Exit Inspector`.
-   After a successful click, inspect mode should auto-exit, the primary action should flip back to `Inspector`, and the toolbar should remain visible.
-   The toolbar should also show a short saved-selection card under the main controls so the operator can see what was selected and know it has been persisted.
-   The page should immediately become navigable again, and the toolbar should continue to appear across same-tab navigation, reloads, same-document navigation, and other tabs in the same dedicated profile.
-   Clicking `Inspector` after exit should immediately re-enter inspect mode, even before a new capture workflow is created.
+   The page panel should already be injected in the idle ready state on entry, with the primary action labeled `Press this button to inspect`.
+   After the operator clicks that button, inspect mode should become active and the button should read `Inspecting`.
+   After a successful click, inspect mode should auto-exit, the primary action should flip back to `Press this button to inspect`, and the panel should remain visible.
+   The saved-selection details should live inside that same panel and show `Selected`, `Content`, `Page`, and `Element`.
+   The page should immediately become navigable again, and the panel should continue to appear across same-tab navigation, reloads, same-document navigation, and other tabs in the same dedicated profile.
+   Clicking `Press this button to inspect` after selection or idle state should immediately re-enter inspect mode, even before a new capture workflow is created.
 5. Call `scripts/inspect-capture await --workflow-id "<workflowId>"`.
 6. Treat the result as valid only if it belongs to the current `workflowId` and follows a fresh click for this capture cycle.
    If `await_selection` appears to return immediately with stale prior context, restart capture instead of presenting it as the new selection.
@@ -163,16 +226,15 @@ For `/chrome-inspect` default flow, send:
 
 ## Inspect toolbar contract
 
-The inspect toolbar is a persistent browser-level affordance, while capture is a one-shot workflow layered on top of it.
+The inspect panel is a persistent browser-level affordance, while capture is a one-shot workflow layered on top of it.
 
-- On first entry to a new capture, the toolbar should already be active. The primary button reads `Exit Inspector`.
-- Every page tab in the dedicated profile should receive the toolbar. Inspect-originated tabs start active; other tabs stay injected in the idle `Inspector` state until a capture or manual re-entry activates inspect mode there.
-- If the operator clicks `Exit Inspector`, inspect mode stops immediately and the primary button changes back to `Inspector`.
-- If the operator selects an element, inspect mode also stops immediately and the toolbar moves to a saved-selection state.
-- In the saved-selection state, the toolbar should show a short summary card under the controls with “Selected and saved. Return to the agent.” plus a compact element summary.
-- In the saved-selection or exited state, clicking `Inspector` must re-enter inspect mode without requiring a second click or a brand-new workflow just to make the UI responsive.
-- A small `×` button may be present to temporarily dismiss the toolbar when it overlaps page content. This is a visibility affordance, not the main exit path.
-- Toolbar presence should persist across same-tab navigation, reloads, and same-document navigation.
+- On first entry to a new capture, the panel should already be visible but idle. The primary button reads `Press this button to inspect`.
+- Every page tab in the dedicated profile should receive the same panel in that idle state by default.
+- If the operator clicks `Press this button to inspect`, inspect mode starts immediately and the primary button changes to `Inspecting`.
+- If the operator selects an element, inspect mode stops immediately and the panel moves to a saved-selection state.
+- In the saved-selection state, the panel should show `Selected`, `Content`, `Page`, and `Element` in the same panel body.
+- In the saved-selection or idle state, clicking `Press this button to inspect` must re-enter inspect mode without requiring a second click or a brand-new workflow just to make the UI responsive.
+- Panel presence should persist across same-tab navigation, reloads, and same-document navigation.
 - The most recent successful selection should be persisted so the next turn can recover it if the original capture timed out.
 - Selection history should also be appended to `events/selection-history.jsonl` so at least one prior selection remains inspectable like a clipboard trail.
 - When a new inspect session starts without an explicit URL, the runtime should prefer the current latest page tab instead of wandering across older attached tabs.
@@ -206,7 +268,7 @@ To run the local closed-loop visual validation for the compact inspect toolbar, 
 node runtime/chrome-use/scripts/inspect_visual_loop.mjs
 ```
 
-The script opens the dedicated browser against a deterministic local fixture, verifies the `Exit Inspector` / `Inspector` toggle contract, checks that a secondary tab receives idle toolbar injection, checks that selection auto-exits inspect mode, validates the saved-selection summary card, confirms manual re-entry without a fresh workflow, verifies JSONL history appends across selections, confirms navigation keeps the toolbar injected, re-arms a second capture on the destination page, and writes screenshots to a temp output directory.
+The script opens the dedicated browser against a deterministic local fixture, verifies the idle `Press this button to inspect` / active `Inspecting` panel contract, checks that a secondary tab receives the same idle panel injection, checks that selection auto-exits inspect mode, validates the unified saved-selection panel body, confirms manual re-entry without a fresh workflow, verifies JSONL history appends across selections, confirms navigation keeps the panel injected, and writes screenshots to a temp output directory.
 
 ## Platform support
 

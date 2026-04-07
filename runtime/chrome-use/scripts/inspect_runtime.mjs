@@ -158,6 +158,187 @@ function inspectSelectionBadgeSummary(payload) {
   return text ? `${selector} - ${text}` : selector;
 }
 
+function formatPagePathForToolbar(rawUrl) {
+  if (!rawUrl) {
+    return "Current page";
+  }
+  try {
+    const parsed = new URL(rawUrl);
+    const pathname = parsed.pathname || "/";
+    return pathname.startsWith("/") ? pathname : `/${pathname}`;
+  } catch {
+    const normalized = String(rawUrl).trim();
+    if (!normalized) {
+      return "Current page";
+    }
+    return normalized.replace(/^[a-z]+:\/\/[^/]+/i, "") || normalized;
+  }
+}
+
+function formatElementPathForToolbar(selectedElement) {
+  if (!selectedElement) {
+    return "element";
+  }
+  const explicitPath = safeTruncate(String(selectedElement.elementPath || "").trim(), 160);
+  if (explicitPath) {
+    return explicitPath;
+  }
+  const tag = selectedElement.nodeName
+    ? String(selectedElement.nodeName).toLowerCase()
+    : "element";
+  const aria = safeTruncate(String(selectedElement.ariaLabel || "").trim(), 32);
+  if (aria) {
+    return `${tag} [${aria}]`;
+  }
+  const selectorHint = String(selectedElement.selectorHint || "").trim();
+  if (selectorHint && selectorHint !== tag) {
+    return safeTruncate(`${tag} ${selectorHint}`, 40);
+  }
+  return tag;
+}
+
+function formatSelectedTextForToolbar(payload) {
+  if (!payload?.selectedElement) {
+    return "Selection captured.";
+  }
+  const snippet = String(payload.selectedElement.snippet || "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (snippet) {
+    return safeTruncate(snippet, 120);
+  }
+  const label = payload.selectedElement.ariaLabel || payload.selectedElement.descriptionText || payload.selectedElement.selectorHint;
+  if (label) {
+    return safeTruncate(String(label).trim(), 120);
+  }
+  return formatElementPathForToolbar(payload.selectedElement);
+}
+
+function buildToolbarSelectionDetails(payload) {
+  if (!payload?.selectedElement) {
+    return {
+      selected: "",
+      content: "",
+      page: "",
+      element: "",
+    };
+  }
+  return {
+    selected: inspectSelectionBadgeSummary(payload),
+    content: formatSelectedTextForToolbar(payload),
+    page: formatPagePathForToolbar(payload.page?.url),
+    element: formatElementPathForToolbar(payload.selectedElement),
+  };
+}
+
+function buildToolbarSelectionDetailsFromMeta(meta) {
+  if (!meta) {
+    return {
+      selected: "",
+      content: "",
+      page: "",
+      element: "",
+    };
+  }
+  const tag = meta.tagName ? String(meta.tagName).toLowerCase() : "element";
+  const id = meta.id ? `#${meta.id}` : "";
+  const classSuffix = meta.className
+    ? `.${String(meta.className).split(/\s+/).filter(Boolean).join(".")}`
+    : "";
+  return {
+    selected: safeTruncate(`${tag}${id}${classSuffix}` || tag, 120),
+    content: "",
+    page: "",
+    element: safeTruncate(`${tag}${id}${classSuffix}` || tag, 160),
+  };
+}
+
+async function deriveElementPath(activeCdp, sessionId, nodeId, backendNodeId) {
+  const resolveResult = await safeSend(
+    activeCdp,
+    "DOM.resolveNode",
+    nodeId ? { nodeId } : { backendNodeId },
+    sessionId,
+  );
+  const objectId = resolveResult.result?.object?.objectId;
+  if (!resolveResult.ok || !objectId) {
+    return null;
+  }
+
+  const callResult = await safeSend(
+    activeCdp,
+    "Runtime.callFunctionOn",
+    {
+      objectId,
+      awaitPromise: true,
+      returnByValue: true,
+      functionDeclaration: `function() {
+        const shorten = (value, max) => {
+          const text = String(value || "").trim();
+          if (!text) return "";
+          return text.length <= max ? text : text.slice(0, max) + "...";
+        };
+        const describe = (element) => {
+          if (!(element instanceof Element)) return "";
+          const tag = (element.tagName || "element").toLowerCase();
+          const id = element.id ? "#" + element.id : "";
+          const classes = typeof element.className === "string"
+            ? element.className.trim().split(/\\s+/).filter(Boolean).slice(0, 2).join(".")
+            : "";
+          const classSuffix = classes ? "." + classes : "";
+          return shorten(tag + id + classSuffix, 48);
+        };
+        const parts = [];
+        let current = this;
+        let depth = 0;
+        while (current instanceof Element && depth < 6) {
+          const part = describe(current);
+          if (part) parts.unshift(part);
+          if (current.id) break;
+          current = current.parentElement;
+          depth += 1;
+        }
+        return parts.join(" > ");
+      }`,
+    },
+    sessionId,
+  );
+
+  await safeSend(activeCdp, "Runtime.releaseObject", { objectId }, sessionId);
+  if (!callResult.ok) {
+    return null;
+  }
+  const value = String(callResult.result?.result?.value || "").trim();
+  return value || null;
+}
+
+async function readLatestSelectionHistoryEntry(store) {
+  try {
+    const history = await readFile(store.selectionHistoryPath, "utf8");
+    const lines = history
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    for (let idx = lines.length - 1; idx >= 0; idx -= 1) {
+      try {
+        const candidate = JSON.parse(lines[idx]);
+        if (candidate?.payload?.selectedElement) {
+          return candidate;
+        }
+      } catch {
+        // Ignore malformed entries and continue scanning backward.
+      }
+    }
+    return null;
+  } catch (err) {
+    if (err?.code === "ENOENT") {
+      return null;
+    }
+    throw err;
+  }
+}
+
 function inspectSelectionBadgeSummaryFromMeta(meta) {
   if (!meta) {
     return "";
@@ -644,6 +825,70 @@ async function persistRecoveredSelection(state, workflowId, payload, targetId = 
   });
 }
 
+async function finalizeWorkflowSelection(cdp, state, workflow, payload, targetId = null) {
+  const currentSelection = await persistCurrentSelection(state.store, state, {
+    workflowId: workflow.workflowId,
+    status: "selection_received",
+    targetId: targetId || null,
+    page: payload.page,
+    selectedElement: payload.selectedElement,
+    position: payload.position,
+    payload,
+    selectionSource: payload.selectionSource || "overlay_event",
+    captureToken: payload.captureToken || workflow.captureToken || null,
+  });
+
+  if (targetId) {
+    updateCaptureMetaForTarget(state, targetId, {
+      workflowId: workflow.workflowId,
+      captureToken: payload.captureToken || workflow.captureToken || null,
+      mode: "idle_selected",
+      cancelled: false,
+      captureActive: false,
+      selectedDetails: buildToolbarSelectionDetails(payload),
+    });
+  }
+
+  const finalized = await persistWorkflowState(state.store, state, workflow.workflowId, {
+    status: "selection_received",
+    phase: "selection_received",
+    targetId: targetId || null,
+    page: payload.page,
+    selectedElement: payload.selectedElement,
+    position: payload.position,
+    payload,
+    summary: inspectSummary(payload),
+    selectionSource: payload.selectionSource || "overlay_event",
+    error: null,
+    captureToken: workflow.captureToken || payload.captureToken || null,
+    metrics: {
+      firstSelectionObservedAt: payload.observedAt || timingNow(),
+      firstSelectionSource: payload.selectionSource || "overlay_event",
+    },
+  });
+
+  logSignal("selection_recorded", {
+    workflowId: finalized.workflowId,
+    sequence: finalized.sequence,
+    targetId: targetId || null,
+    selectionSource: payload.selectionSource || "overlay_event",
+  });
+
+  state.activeWorkflowId = null;
+  await applyToolbarStateToAllTargets(cdp, state, {
+    workflowId: finalized.workflowId,
+    captureToken: finalized.captureToken || payload.captureToken || null,
+    mode: "idle_selected",
+    cancelled: false,
+    captureActive: false,
+    selectedDetails: buildToolbarSelectionDetails(payload),
+    reason: "selection_recorded",
+  });
+  await persistSessionState(state.store, state, { status: "bridge_ready" });
+
+  return { currentSelection, workflow: finalized };
+}
+
 function isSelectionReady(workflow) {
   return workflow?.status === "selection_received" || workflow?.status === "awaiting_user_instruction";
 }
@@ -653,6 +898,14 @@ async function readWorkflow(store, workflowId) {
     return null;
   }
   return readJsonIfPresent(store.workflowPath(workflowId));
+}
+
+async function readLatestPersistedSelection(store) {
+  const currentSelection = await readJsonIfPresent(store.currentSelectionPath);
+  if (currentSelection?.payload?.selectedElement) {
+    return currentSelection;
+  }
+  return readLatestSelectionHistoryEntry(store);
 }
 
 export function isCurrentSelectionFreshForWorkflow(currentSelection, workflowId) {
@@ -859,7 +1112,7 @@ async function resolveSelectedElementPayload(
     nodeId = backendNodeId;
   }
 
-  const [describeResult, boxResult, outerResult] = await Promise.all([
+  const [describeResult, boxResult, outerResult, elementPath] = await Promise.all([
     sendDomCommandWithRecovery(activeCdp, sessionId, state, domCacheKey, "DOM.describeNode", { nodeId }),
     sendDomCommandWithRecovery(activeCdp, sessionId, state, domCacheKey, "DOM.getBoxModel", { nodeId }).catch(() => null),
     sendDomCommandWithRecovery(activeCdp, sessionId, state, domCacheKey, "DOM.getOuterHTML", { nodeId }).catch(async () => {
@@ -876,6 +1129,7 @@ async function resolveSelectedElementPayload(
         return null;
       }
     }),
+    deriveElementPath(activeCdp, sessionId, nodeId, backendNodeId).catch(() => null),
   ]);
 
   const node = describeResult?.node || {};
@@ -909,6 +1163,7 @@ async function resolveSelectedElementPayload(
         .join(" "),
       selectorHint: hintCandidates[0] || null,
       snippet,
+      elementPath: elementPath || null,
     },
     position: {
       x: bounds ? bounds.x : null,
@@ -986,10 +1241,10 @@ async function updatePageToolbarState(cdp, sessionState, options = {}) {
     options.workflowId || null,
     options.captureToken || null,
     {
-      mode: options.mode || "exited",
+      mode: options.mode || "idle",
       cancelled: !!options.cancelled,
       captureActive: !!options.captureActive,
-      selectedSummary: options.selectedSummary || "",
+      selectedDetails: options.selectedDetails || null,
     },
   );
   try {
@@ -1066,10 +1321,10 @@ async function setInspectModeForSession(cdp, sessionState, mode) {
 }
 
 function buildPageSelectionCaptureSource(workflowId, captureToken, {
-  mode = "inspecting",
+  mode = "idle",
   cancelled = false,
   captureActive = true,
-  selectedSummary = "",
+  selectedDetails = null,
 } = {}) {
   return `(() => {
     const key = "__chromeInspectAgentState";
@@ -1096,19 +1351,29 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
     const state = window[key] || (window[key] = {});
     const sameWorkflow = state.workflowId === ${JSON.stringify(workflowId)} &&
       state.captureToken === ${JSON.stringify(captureToken)};
-    const incomingSelectedSummary = ${JSON.stringify(selectedSummary)};
+    const incomingSelectedDetails = ${JSON.stringify(selectedDetails || {
+      selected: "",
+      content: "",
+      page: "",
+      element: "",
+    })};
     state.workflowId = ${JSON.stringify(workflowId)};
     state.captureToken = ${JSON.stringify(captureToken)};
     state.captureActive = ${captureActive ? "true" : "false"};
     if (!sameWorkflow) {
       state.selected = null;
       state.selectedElement = null;
-      state.selectedSummary = incomingSelectedSummary || "";
+      state.selectedDetails = incomingSelectedDetails || { selected: "", content: "", page: "", element: "" };
       state.toolbarState = initialState;
       state.cancelled = initialState === states.exited;
       state.armedAt = Date.now();
     } else {
-      state.selectedSummary = incomingSelectedSummary || state.selectedSummary || "";
+      state.selectedDetails = incomingSelectedDetails || state.selectedDetails || {
+        selected: "",
+        content: "",
+        page: "",
+        element: "",
+      };
       state.toolbarState = initialState;
       state.cancelled = initialState === states.exited;
       state.armedAt = state.armedAt || Date.now();
@@ -1122,12 +1387,12 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
     state.previousOutline = "";
     state.previousOutlineOffset = "";
     state.toolbar = null;
-    state.toolbarStatus = null;
-    state.toolbarSelectionCard = null;
-    state.toolbarSelectionHeading = null;
-    state.toolbarSelectionSummary = null;
+    state.toolbarBody = null;
     state.toolbarToggleButton = null;
-    state.toolbarCloseButton = null;
+    state.toolbarSelected = null;
+    state.toolbarContent = null;
+    state.toolbarPage = null;
+    state.toolbarElement = null;
     state.styleElement = null;
     state.heartbeatTimer = null;
     state.toolbarObserver = null;
@@ -1135,10 +1400,8 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
     state.handleMove = null;
     state.handleClick = null;
     state.handleToggleClick = null;
-    state.handleCloseClick = null;
     state.previousCursor = document.documentElement.style.cursor || "";
     state.listenerInstalled = false;
-    state.dismissed = false;
 
     state.removeHighlight = () => {
       if (state.highlighted) {
@@ -1161,38 +1424,44 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
   top: 14px;
   right: 14px;
   z-index: 2147483647;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  max-width: min(420px, calc(100vw - 24px));
-  padding: 6px 8px 6px 10px;
-  border-radius: 999px;
+  display: grid;
+  gap: 10px;
+  width: min(360px, calc(100vw - 24px));
+  padding: 12px;
+  border-radius: 16px;
   background: rgba(16, 16, 16, 0.92);
   color: #fff;
   border: 1px solid rgba(255, 255, 255, 0.12);
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
   font: 600 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   backdrop-filter: blur(12px);
+  box-sizing: border-box;
 }
-[data-chrome-inspect-toolbar] [data-role="status"] {
-  min-width: 0;
-  max-width: 180px;
-  color: rgba(255, 255, 255, 0.92);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+[data-chrome-inspect-toolbar] [data-role="row"] {
+  display: block;
 }
-[data-chrome-inspect-toolbar] [data-role="actions"] {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: none;
+[data-chrome-inspect-toolbar] [data-role="body"] {
+  display: none;
+  gap: 8px;
+  padding-top: 2px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+[data-chrome-inspect-toolbar][data-state="idle_selected"] [data-role="body"] {
+  display: grid;
+}
+[data-chrome-inspect-toolbar] [data-role="label"] {
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 [data-chrome-inspect-toolbar] button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
+  width: 100%;
   height: 28px;
   border: 1px solid transparent;
   border-radius: 999px;
@@ -1217,19 +1486,6 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
   background: #ff6600;
   border-color: rgba(255, 255, 255, 0.18);
 }
-[data-chrome-inspect-toolbar] button[data-role="close"] {
-  width: 28px;
-  min-width: 28px;
-  padding: 0;
-  background: transparent;
-  color: rgba(255, 255, 255, 0.72);
-  border-color: rgba(255, 255, 255, 0.12);
-}
-[data-chrome-inspect-toolbar] button[data-role="close"]:hover {
-  color: #fff;
-  border-color: rgba(204, 51, 68, 0.4);
-  background: rgba(204, 51, 68, 0.16);
-}
 [data-chrome-inspect-toolbar] button svg {
   width: 14px;
   height: 14px;
@@ -1239,30 +1495,16 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-[data-chrome-inspect-toolbar] [data-role="selection-card"] {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  width: min(360px, calc(100vw - 24px));
-  display: none;
-  padding: 10px 12px;
-  border-radius: 14px;
-  background: rgba(16, 16, 16, 0.94);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
-}
-[data-chrome-inspect-toolbar][data-state="idle_selected"] [data-role="selection-card"] {
+[data-chrome-inspect-toolbar] [data-role="selection-value"] {
   display: block;
-}
-[data-chrome-inspect-toolbar] [data-role="selection-heading"] {
-  display: block;
-  margin-bottom: 4px;
   color: rgba(255, 255, 255, 0.96);
   font-size: 12px;
-  line-height: 1.3;
+  font-weight: 600;
+  line-height: 1.45;
+  word-break: break-word;
 }
-[data-chrome-inspect-toolbar] [data-role="selection-summary"] {
-  display: block;
+[data-chrome-inspect-toolbar] [data-role="selection-page"],
+[data-chrome-inspect-toolbar] [data-role="selection-element"] {
   color: rgba(255, 255, 255, 0.76);
   font-weight: 500;
   font-size: 11px;
@@ -1300,16 +1542,6 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
       return states.inspecting;
     };
 
-    state.statusTextForState = (toolbarState) => {
-      if (toolbarState === states.idleSelected) {
-        return "Selected and saved";
-      }
-      if (toolbarState === states.exited) {
-        return "Inspect exited";
-      }
-      return "Inspect mode active";
-    };
-
     state.reportToolbarState = (reason) => {
       try {
         const toolbarState = state.resolveToolbarState();
@@ -1331,26 +1563,32 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
       if (!state.toolbar) return;
       const toolbarState = state.resolveToolbarState();
       state.toolbar.dataset.state = toolbarState;
-      state.toolbar.hidden = !!state.dismissed;
-      if (state.toolbarStatus) {
-        state.toolbarStatus.textContent = state.statusTextForState(toolbarState);
-      }
-      if (state.toolbarSelectionHeading) {
-        state.toolbarSelectionHeading.textContent = toolbarState === states.idleSelected
-          ? "Selected and saved. Return to the agent."
+      if (state.toolbarSelected) {
+        state.toolbarSelected.textContent = toolbarState === states.idleSelected
+          ? (state.selectedDetails?.selected || "Selection captured.")
           : "";
       }
-      if (state.toolbarSelectionSummary) {
-        state.toolbarSelectionSummary.textContent = toolbarState === states.idleSelected
-          ? (state.selectedSummary || "Selection captured.")
+      if (state.toolbarContent) {
+        state.toolbarContent.textContent = toolbarState === states.idleSelected
+          ? (state.selectedDetails?.content || "")
+          : "";
+      }
+      if (state.toolbarPage) {
+        state.toolbarPage.textContent = toolbarState === states.idleSelected
+          ? (state.selectedDetails?.page || "")
+          : "";
+      }
+      if (state.toolbarElement) {
+        state.toolbarElement.textContent = toolbarState === states.idleSelected
+          ? (state.selectedDetails?.element || "")
           : "";
       }
       if (state.toolbarToggleButton) {
         const isInspecting = toolbarState === states.inspecting;
         state.toolbarToggleButton.dataset.active = isInspecting ? "true" : "false";
         state.toolbarToggleButton.querySelector("span").textContent = isInspecting
-          ? "Exit Inspector"
-          : "Inspector";
+          ? "Inspecting"
+          : "Press this button to inspect";
       }
     };
 
@@ -1376,11 +1614,10 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
       state.toolbarState = nextToolbarState;
       state.cancelled = nextToolbarState === states.exited;
       state.captureActive = !!captureActive;
-      state.dismissed = false;
       if (clearSelection) {
         state.selected = null;
         state.selectedElement = null;
-        state.selectedSummary = "";
+        state.selectedDetails = { selected: "", content: "", page: "", element: "" };
       }
       state.applyMode();
       state.updateToolbar();
@@ -1395,61 +1632,55 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
         toolbar = document.createElement("div");
         toolbar.setAttribute("data-chrome-inspect-toolbar", "true");
         toolbar.innerHTML = \`
-          <span data-role="status"></span>
-          <div data-role="actions">
+          <div data-role="row">
             <button type="button" data-role="inspect" data-chrome-inspect-action="toggle" aria-label="Toggle inspect mode">
               <svg viewBox="0 0 16 16" aria-hidden="true">
                 <circle cx="7" cy="7" r="4.25"></circle>
                 <path d="M10.5 10.5L14 14"></path>
               </svg>
-              <span>Inspect</span>
-            </button>
-            <button type="button" data-role="close" data-chrome-inspect-action="close" aria-label="Hide inspector toolbar">
-              <svg viewBox="0 0 16 16" aria-hidden="true">
-                <path d="M4 4L12 12"></path>
-                <path d="M12 4L4 12"></path>
-              </svg>
+              <span>Press this button to inspect</span>
             </button>
           </div>
-          <div data-role="selection-card" aria-live="polite">
-            <strong data-role="selection-heading"></strong>
-            <span data-role="selection-summary"></span>
+          <div data-role="body" aria-live="polite">
+            <div>
+              <span data-role="label">Selected</span>
+              <span data-role="selection-value" data-field="selected"></span>
+            </div>
+            <div>
+              <span data-role="label">Content</span>
+              <span data-role="selection-value" data-field="content"></span>
+            </div>
+            <div>
+              <span data-role="label">Page</span>
+              <span data-role="selection-page"></span>
+            </div>
+            <div>
+              <span data-role="label">Element</span>
+              <span data-role="selection-element"></span>
+            </div>
           </div>
         \`;
         (document.body || document.documentElement).appendChild(toolbar);
       }
       state.toolbar = toolbar;
-      state.toolbarStatus = toolbar.querySelector('[data-role="status"]');
-      state.toolbarSelectionCard = toolbar.querySelector('[data-role="selection-card"]');
-      state.toolbarSelectionHeading = toolbar.querySelector('[data-role="selection-heading"]');
-      state.toolbarSelectionSummary = toolbar.querySelector('[data-role="selection-summary"]');
+      state.toolbarBody = toolbar.querySelector('[data-role="body"]');
       state.toolbarToggleButton = toolbar.querySelector('button[data-chrome-inspect-action="toggle"]');
-      state.toolbarCloseButton = toolbar.querySelector('button[data-chrome-inspect-action="close"]');
+      state.toolbarSelected = toolbar.querySelector('[data-field="selected"]');
+      state.toolbarContent = toolbar.querySelector('[data-field="content"]');
+      state.toolbarPage = toolbar.querySelector('[data-role="selection-page"]');
+      state.toolbarElement = toolbar.querySelector('[data-role="selection-element"]');
       if (state.toolbarToggleButton && !state.toolbarToggleButton.__chromeInspectBound) {
         state.handleToggleClick = (event) => {
           event.preventDefault();
           event.stopPropagation();
-          state.dismissed = false;
           if (state.resolveToolbarState() === states.inspecting) {
-            state.transitionTo(states.exited, { clearSelection: false, captureActive: false });
+            state.transitionTo(states.idle, { clearSelection: false, captureActive: false });
             return;
           }
           state.transitionTo(states.inspecting, { clearSelection: true, captureActive: true });
         };
         state.toolbarToggleButton.addEventListener("click", state.handleToggleClick, true);
         state.toolbarToggleButton.__chromeInspectBound = true;
-      }
-      if (state.toolbarCloseButton && !state.toolbarCloseButton.__chromeInspectBound) {
-        state.handleCloseClick = (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          state.dismissed = true;
-          state.updateToolbar();
-          state.updateHeartbeat();
-          state.reportToolbarState("toolbar_dismissed");
-        };
-        state.toolbarCloseButton.addEventListener("click", state.handleCloseClick, true);
-        state.toolbarCloseButton.__chromeInspectBound = true;
       }
       state.updateToolbar();
       return toolbar;
@@ -1500,6 +1731,41 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
           ? "." + el.className.trim().split(/\s+/).join(".")
           : "",
       ].filter(Boolean).join("");
+      const textContent = String(el.innerText || el.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim();
+      const locationPath = (() => {
+        try {
+          const pathname = location.pathname || "/";
+          return pathname.startsWith("/") ? pathname : "/" + pathname;
+        } catch {
+          return "Current page";
+        }
+      })();
+      state.selectedDetails = {
+        selected: state.selectedSummary || "Selection captured.",
+        content: textContent ? textContent.slice(0, 120) : (state.selectedSummary || "Selection captured."),
+        page: locationPath,
+        element: (() => {
+          const parts = [];
+          let current = el;
+          let depth = 0;
+          while (current instanceof Element && depth < 6) {
+            const tag = String(current.tagName || "element").toLowerCase();
+            const id = current.id ? "#" + current.id : "";
+            const classSuffix = typeof current.className === "string" && current.className.trim()
+              ? "." + current.className.trim().split(/\\s+/).slice(0, 2).join(".")
+              : "";
+            parts.unshift((tag + id + classSuffix).slice(0, 48));
+            if (current.id) {
+              break;
+            }
+            current = current.parentElement;
+            depth += 1;
+          }
+          return parts.join(" > ");
+        })(),
+      };
       state.transitionTo(states.idleSelected, { captureActive: false });
     };
 
@@ -1550,9 +1816,6 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
       }
       if (state.toolbarToggleButton && state.handleToggleClick) {
         state.toolbarToggleButton.removeEventListener("click", state.handleToggleClick, true);
-      }
-      if (state.toolbarCloseButton && state.handleCloseClick) {
-        state.toolbarCloseButton.removeEventListener("click", state.handleCloseClick, true);
       }
       if (state.heartbeatTimer) window.clearInterval(state.heartbeatTimer);
       if (state.toolbarObserver) state.toolbarObserver.disconnect();
@@ -1650,6 +1913,7 @@ export async function reflectSelectionOnPage(cdp, sessionState, workflowId, payl
     mode: "idle_selected",
     cancelled: false,
     captureActive: false,
+    selectedDetails: buildToolbarSelectionDetails(payload),
   });
 }
 
@@ -1665,17 +1929,17 @@ async function armPageSelectionCapture(cdp, state, workflow) {
         ? await armCaptureForTarget(cdp, state, targetId, {
             workflowId,
             captureToken: workflow.captureToken,
-            mode: "inspecting",
+            mode: "idle",
             cancelled: false,
             reason: "workflow_begin",
           })
         : await applyToolbarStateForTarget(cdp, state, targetId, {
             workflowId: null,
             captureToken: null,
-            mode: "exited",
+            mode: "idle",
             cancelled: false,
             captureActive: false,
-            selectedSummary: "",
+            selectedDetails: null,
             reason: "workflow_begin_idle",
           });
       armedAt = meta?.armedAt || armedAt;
@@ -1979,6 +2243,27 @@ function isSelectionEventFreshForWorkflow(selection, workflow) {
   return true;
 }
 
+function getSelectionCandidateTargetIds(state, workflow = null) {
+  const candidates = [
+    state.lastSelectionEvent?.targetId || null,
+    workflow?.targetId || null,
+    state.inspectTargetId || null,
+    state.preferredTargetId || null,
+  ].filter((targetId) => targetId && state.targetsById.has(targetId));
+
+  const unique = [];
+  const seen = new Set();
+  for (const targetId of candidates) {
+    if (seen.has(targetId)) {
+      continue;
+    }
+    seen.add(targetId);
+    unique.push(targetId);
+  }
+
+  return unique.length ? unique : [...state.targetsById.keys()];
+}
+
 async function resolveLiveSelectionIfFresh(state, cdp, workflow) {
   if (!workflow) {
     return null;
@@ -2017,7 +2302,11 @@ async function resolveLatestSelection(state, cdp, waitForSelectionMs, timeoutMs,
       return materializeSelectionPayloadWithRecovery(cdp, state, selection);
     }
 
-    for (const [targetId, sessionState] of state.targetsById) {
+    for (const targetId of getSelectionCandidateTargetIds(state, workflow)) {
+      const sessionState = state.targetsById.get(targetId);
+      if (!sessionState) {
+        continue;
+      }
       const pageInfo = state.targetInfosByTargetId.get(targetId) || {};
       if (workflow) {
         const pageClickPayload = await resolveSelectionByPageClick(
@@ -2097,6 +2386,30 @@ function workflowToAwaitingPayload(workflow, store = null) {
   };
 }
 
+function persistedSelectionToAwaitingPayload(selection, store = null) {
+  const payload = selection?.payload;
+  if (!payload?.selectedElement) {
+    return null;
+  }
+  return {
+    phase: "awaiting_user_instruction",
+    workflowId: selection.workflowId || null,
+    status: "awaiting_user_instruction",
+    summary: inspectSummary(payload),
+    observedAt: payload.observedAt || null,
+    selectedElement: payload.selectedElement,
+    position: payload.position,
+    page: payload.page,
+    selectionSource: selection.selectionSource || payload.selectionSource || null,
+    selectionHistoryPath: store?.selectionHistoryPath || null,
+    nextStep: {
+      action: "apply_instruction",
+      workflowId: selection.workflowId || null,
+      instruction: "How should I edit it?",
+    },
+  };
+}
+
 async function awaitWorkflowSelection(state, cdp, workflowId, waitForSelectionMs, timeoutMs) {
   let workflow = await readWorkflow(state.store, workflowId);
   if (!workflow) {
@@ -2128,10 +2441,8 @@ async function awaitWorkflowSelection(state, cdp, workflowId, waitForSelectionMs
   const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : Number.POSITIVE_INFINITY;
 
   while (true) {
-    const remaining = deadline - Date.now();
-    const chunkTimeout = Number.isFinite(deadline)
-      ? Math.max(0, Math.min(pollMs, remaining))
-      : pollMs;
+    const remaining = Number.isFinite(deadline) ? Math.max(0, deadline - Date.now()) : 0;
+    const chunkTimeout = Number.isFinite(deadline) ? Math.min(pollMs, remaining) : pollMs;
 
     const observed = await waitForFileSignal({
       filePath: state.store.workflowPath(workflowId),
@@ -2170,7 +2481,7 @@ async function awaitWorkflowSelection(state, cdp, workflowId, waitForSelectionMs
         mode: "idle_selected",
         cancelled: false,
         captureActive: false,
-        selectedSummary: inspectSelectionBadgeSummary(finalized.payload),
+        selectedDetails: buildToolbarSelectionDetails(finalized.payload),
         reason: "await_selection_ready",
       });
       await persistSessionState(state.store, state, { status: "bridge_ready" });
@@ -2186,7 +2497,11 @@ async function awaitWorkflowSelection(state, cdp, workflowId, waitForSelectionMs
 
     let heartbeat = null;
     let heartbeatTargetId = null;
-    for (const sessionState of state.targetsById.values()) {
+    for (const targetId of getSelectionCandidateTargetIds(state, workflow)) {
+      const sessionState = state.targetsById.get(targetId);
+      if (!sessionState) {
+        continue;
+      }
       const captureState = await readPageCaptureHeartbeat(cdp, sessionState, workflowId);
       if (!captureState) {
         continue;
@@ -2204,6 +2519,29 @@ async function awaitWorkflowSelection(state, cdp, workflowId, waitForSelectionMs
           cancelled: !!heartbeat.cancelled,
         });
       }
+      if (heartbeat.selected && heartbeatTargetId) {
+        const sessionState = state.targetsById.get(heartbeatTargetId);
+        const pageInfo = state.targetInfosByTargetId.get(heartbeatTargetId) || {};
+        if (sessionState) {
+          const pageClickPayload = await resolveSelectionByPageClick(
+            cdp,
+            state,
+            sessionState,
+            pageInfo,
+            workflow,
+          );
+          if (pageClickPayload) {
+            const finalized = await finalizeWorkflowSelection(
+              cdp,
+              state,
+              workflow,
+              pageClickPayload,
+              heartbeatTargetId,
+            );
+            return workflowToAwaitingPayload(finalized.workflow, state.store);
+          }
+        }
+      }
       workflow = await persistWorkflowState(state.store, state, workflowId, {
         status: "waiting_for_selection",
         phase: "waiting_for_selection",
@@ -2220,81 +2558,9 @@ async function awaitWorkflowSelection(state, cdp, workflowId, waitForSelectionMs
       });
     }
 
-    const fallback = await tryResolveLatestSelection(state, cdp, waitForSelectionMs, pollMs, workflow);
-    if (fallback) {
-      await persistRecoveredSelection(state, workflowId, fallback);
-      const recovered = await persistWorkflowState(state.store, state, workflowId, {
-        status: "awaiting_user_instruction",
-        phase: "awaiting_user_instruction",
-        payload: fallback,
-        selectedElement: fallback.selectedElement,
-        position: fallback.position,
-        page: fallback.page,
-        summary: inspectSummary(fallback),
-        selectionSource: fallback.selectionSource || "page_click",
-        metrics: {
-          firstSelectionObservedAt: fallback.observedAt || timingNow(),
-          firstSelectionSource: fallback.selectionSource || "page_click",
-        },
-      });
-      if (state.activeWorkflowId === workflowId) {
-        state.activeWorkflowId = null;
-      }
-      await applyToolbarStateToAllTargets(cdp, state, {
-        workflowId,
-        captureToken: recovered.captureToken || fallback.captureToken || null,
-        mode: "idle_selected",
-        cancelled: false,
-        captureActive: false,
-        selectedSummary: inspectSelectionBadgeSummary(fallback),
-        reason: "await_selection_fallback",
-      });
-      await persistSessionState(state.store, state, { status: "bridge_ready" });
-      return workflowToAwaitingPayload(recovered, state.store);
-    }
-
-    if (Date.now() >= deadline) {
+    if (Number.isFinite(deadline) && Date.now() >= deadline) {
       break;
     }
-  }
-
-  if (!workflow || workflow.status === "waiting_for_selection") {
-    const fallback = await resolveLatestSelection(
-      state,
-      cdp,
-      waitForSelectionMs,
-      timeoutMs === 0 ? waitForSelectionMs * 2 : timeoutMs,
-      workflow,
-    );
-    await persistRecoveredSelection(state, workflowId, fallback);
-    const recovered = await persistWorkflowState(state.store, state, workflowId, {
-      status: "awaiting_user_instruction",
-      phase: "awaiting_user_instruction",
-      payload: fallback,
-      selectedElement: fallback.selectedElement,
-      position: fallback.position,
-      page: fallback.page,
-      summary: inspectSummary(fallback),
-      selectionSource: fallback.selectionSource || "page_click",
-      metrics: {
-        firstSelectionObservedAt: fallback.observedAt || timingNow(),
-        firstSelectionSource: fallback.selectionSource || "page_click",
-      },
-    });
-    if (state.activeWorkflowId === workflowId) {
-      state.activeWorkflowId = null;
-    }
-    await applyToolbarStateToAllTargets(cdp, state, {
-      workflowId,
-      captureToken: recovered.captureToken || fallback.captureToken || null,
-      mode: "idle_selected",
-      cancelled: false,
-      captureActive: false,
-      selectedSummary: inspectSelectionBadgeSummary(fallback),
-      reason: "await_selection_terminal_fallback",
-    });
-    await persistSessionState(state.store, state, { status: "bridge_ready" });
-    return workflowToAwaitingPayload(recovered, state.store);
   }
 
   if (workflow.status === "browser_disconnected") {
@@ -2346,6 +2612,15 @@ export async function handleInspectAction(cdp, state, args, messageId) {
           sequence: workflow.sequence,
           error: workflow.error || null,
         };
+  }
+
+  if (action === "get_latest_selection") {
+    const latestSelection = await readLatestPersistedSelection(state.store);
+    const payload = persistedSelectionToAwaitingPayload(latestSelection, state.store);
+    if (!payload) {
+      throw new Error("There is no persisted inspect selection yet. Run begin_capture/await_selection first.");
+    }
+    return payload;
   }
 
   if (action === "await_selection") {
@@ -2419,7 +2694,7 @@ export async function handleInspectAction(cdp, state, args, messageId) {
     mode: "idle_selected",
     cancelled: false,
     captureActive: false,
-    selectedSummary: inspectSelectionBadgeSummary(workflow.payload),
+    selectedDetails: buildToolbarSelectionDetails(workflow.payload),
     reason: "instruction_recorded",
   });
   logSignal("instruction_recorded", { workflowId, sequence: updated.sequence });
@@ -2446,85 +2721,67 @@ export async function handleInspectAction(cdp, state, args, messageId) {
 
 async function recordSelectionForWorkflow(cdp, state, selection) {
   const payload = await materializeSelectionPayloadWithRecovery(cdp, state, selection);
-  const workflowId = state.activeWorkflowId;
-  const sessionState = selection.targetId ? state.targetsById.get(selection.targetId) : null;
+  const activeWorkflowId = state.activeWorkflowId;
   const captureMeta = selection.targetId ? state.captureMetaByTargetId.get(selection.targetId) : null;
-  if (captureMeta?.captureToken && !payload.captureToken) {
-    payload.captureToken = captureMeta.captureToken;
+  const boundWorkflowId = selection.workflowId || captureMeta?.workflowId || null;
+  const boundCaptureToken = selection.captureToken || captureMeta?.captureToken || null;
+  let workflow = null;
+  let workflowId = null;
+
+  if (activeWorkflowId) {
+    workflow = await readWorkflow(state.store, activeWorkflowId);
+    const activeCaptureToken = workflow?.captureToken || null;
+    const isFreshSelection = !!workflow &&
+      boundWorkflowId === workflow.workflowId &&
+      !!boundCaptureToken &&
+      boundCaptureToken === activeCaptureToken;
+    if (!isFreshSelection) {
+      logSignal("selection_ignored_for_inactive_workflow", {
+        activeWorkflowId,
+        selectionWorkflowId: boundWorkflowId,
+        activeCaptureToken,
+        selectionCaptureToken: boundCaptureToken,
+        targetId: selection.targetId || null,
+      });
+      return null;
+    }
+    workflowId = workflow.workflowId;
   }
 
-  const currentSelection = await persistCurrentSelection(state.store, state, {
-    workflowId: workflowId || null,
-    status: "selection_received",
-    targetId: selection.targetId || null,
-    page: payload.page,
-    selectedElement: payload.selectedElement,
-    position: payload.position,
-    payload,
-    selectionSource: payload.selectionSource || "overlay_event",
-    captureToken: payload.captureToken || selection.captureToken || null,
-  });
+  if (boundCaptureToken && !payload.captureToken) {
+    payload.captureToken = boundCaptureToken;
+  }
 
   if (workflowId) {
-    if (selection.targetId) {
-      updateCaptureMetaForTarget(state, selection.targetId, {
-        workflowId,
-        captureToken: payload.captureToken || selection.captureToken || null,
-        mode: "idle_selected",
-        cancelled: false,
-        captureActive: false,
-        selectedSummary: inspectSelectionBadgeSummary(payload),
-      });
-    }
-    const workflow = await persistWorkflowState(state.store, state, workflowId, {
+    await finalizeWorkflowSelection(cdp, state, workflow, payload, selection.targetId || null);
+  } else {
+    const currentSelection = await persistCurrentSelection(state.store, state, {
+      workflowId: null,
       status: "selection_received",
-      phase: "selection_received",
       targetId: selection.targetId || null,
       page: payload.page,
       selectedElement: payload.selectedElement,
       position: payload.position,
       payload,
-      summary: inspectSummary(payload),
       selectionSource: payload.selectionSource || "overlay_event",
-      error: null,
-      metrics: {
-        firstSelectionObservedAt: payload.observedAt || timingNow(),
-        firstSelectionSource: payload.selectionSource || "overlay_event",
-      },
-    });
-    logSignal("selection_recorded", {
-      workflowId,
-      sequence: workflow.sequence,
-      targetId: selection.targetId || null,
-      selectionSource: payload.selectionSource || "overlay_event",
-    });
-    state.activeWorkflowId = null;
-    await applyToolbarStateToAllTargets(cdp, state, {
-      workflowId,
       captureToken: payload.captureToken || selection.captureToken || null,
-      mode: "idle_selected",
-      cancelled: false,
-      captureActive: false,
-      selectedSummary: inspectSelectionBadgeSummary(payload),
-      reason: "selection_recorded",
     });
-  } else {
     if (selection.targetId) {
       updateCaptureMetaForTarget(state, selection.targetId, {
         workflowId: null,
-        captureToken: payload.captureToken || selection.captureToken || null,
+        captureToken: payload.captureToken || boundCaptureToken || null,
         mode: "idle_selected",
         cancelled: false,
         captureActive: false,
-        selectedSummary: inspectSelectionBadgeSummary(payload),
+        selectedDetails: buildToolbarSelectionDetails(payload),
       });
       await applyToolbarStateForTarget(cdp, state, selection.targetId, {
         workflowId: null,
-        captureToken: payload.captureToken || selection.captureToken || null,
+        captureToken: payload.captureToken || boundCaptureToken || null,
         mode: "idle_selected",
         cancelled: false,
         captureActive: false,
-        selectedSummary: inspectSelectionBadgeSummary(payload),
+        selectedDetails: buildToolbarSelectionDetails(payload),
         reason: "selection_recorded_without_workflow",
       });
     }
@@ -2532,11 +2789,10 @@ async function recordSelectionForWorkflow(cdp, state, selection) {
       sequence: currentSelection.sequence,
       targetId: selection.targetId || null,
     });
+    await persistSessionState(state.store, state, {
+      status: "bridge_ready",
+    });
   }
-
-  await persistSessionState(state.store, state, {
-    status: workflowId ? "selection_received" : "bridge_ready",
-  });
 
   notifySelectionWaiters(state, selection);
   return payload;
@@ -2706,9 +2962,9 @@ async function attachPageTarget(cdp, targetInfo, state) {
         await applyToolbarStateForTarget(cdp, state, targetInfo.targetId, {
           workflowId: state.activeWorkflowId,
           captureToken: workflow.captureToken,
-          mode: "inspecting",
+          mode: "idle",
           cancelled: false,
-          captureActive: true,
+          captureActive: false,
           reason: "target_attached",
         });
       }
@@ -2720,7 +2976,7 @@ async function attachPageTarget(cdp, targetInfo, state) {
     await applyToolbarStateForTarget(cdp, state, targetInfo.targetId, {
       workflowId: null,
       captureToken: null,
-      mode: "exited",
+      mode: "idle",
       cancelled: false,
       captureActive: false,
       reason: "target_attached_idle",
@@ -2825,10 +3081,10 @@ function updateCaptureMetaForTarget(state, targetId, patch) {
 async function applyToolbarStateForTarget(cdp, state, targetId, {
   workflowId = null,
   captureToken = null,
-  mode = "exited",
+  mode = "idle",
   cancelled = false,
   captureActive = false,
-  selectedSummary = "",
+  selectedDetails = null,
   reason = "manual",
 } = {}) {
   const sessionState = state.targetsById.get(targetId);
@@ -2841,7 +3097,7 @@ async function applyToolbarStateForTarget(cdp, state, targetId, {
     sessionState,
     workflowId,
     captureToken,
-    { mode, cancelled, captureActive, selectedSummary },
+    { mode, cancelled, captureActive, selectedDetails },
   );
   const meta = updateCaptureMetaForTarget(state, targetId, {
     workflowId,
@@ -2850,7 +3106,7 @@ async function applyToolbarStateForTarget(cdp, state, targetId, {
     mode,
     cancelled,
     captureActive,
-    selectedSummary,
+    selectedDetails,
   });
   logSignal("page_toolbar_synced", {
     targetId,
@@ -2859,7 +3115,7 @@ async function applyToolbarStateForTarget(cdp, state, targetId, {
     mode,
     cancelled,
     captureActive,
-    selectedSummary,
+    selectedDetails,
     reason,
   });
   return meta;
@@ -2912,7 +3168,7 @@ function getActiveCaptureMetaForTarget(state, targetId) {
 async function armCaptureForTarget(cdp, state, targetId, {
   workflowId,
   captureToken,
-  mode = "inspecting",
+  mode = "idle",
   cancelled = false,
   reason = "manual",
 } = {}) {
@@ -2934,7 +3190,7 @@ async function armCaptureForTarget(cdp, state, targetId, {
     armedAt: armResult.armedAt || timingNow(),
     mode,
     cancelled,
-    captureActive: true,
+    captureActive: mode === "inspecting",
   });
   logSignal("page_capture_armed", {
     workflowId,
@@ -2954,10 +3210,10 @@ async function rearmCaptureForTargetIfActive(cdp, state, targetId, reason) {
     return applyToolbarStateForTarget(cdp, state, targetId, {
       workflowId: fallbackMeta.workflowId || null,
       captureToken: fallbackMeta.captureToken || null,
-      mode: fallbackMeta.mode || "exited",
+      mode: fallbackMeta.mode || "idle",
       cancelled: !!fallbackMeta.cancelled,
       captureActive: !!fallbackMeta.captureActive,
-      selectedSummary: fallbackMeta.selectedSummary || "",
+      selectedDetails: fallbackMeta.selectedDetails || null,
       reason,
     });
   }
@@ -2968,7 +3224,7 @@ async function rearmCaptureForTargetIfActive(cdp, state, targetId, reason) {
   const pending = armCaptureForTarget(cdp, state, targetId, {
     workflowId: meta.workflowId,
     captureToken: meta.captureToken,
-    mode: meta.mode || "inspecting",
+    mode: meta.mode === "idle_selected" ? "idle_selected" : "idle",
     cancelled: !!meta.cancelled,
     reason,
   }).finally(() => {

@@ -19,11 +19,12 @@ interface:
     3. Start direct capture with `scripts/inspect-capture begin --project-root "<repo>"` and store the returned `workflowId`.
     4. Wait for the operator to select an element in Chrome only after inspect mode is armed, and call
        `scripts/inspect-capture await --workflow-id "<workflowId>"`.
-       On entry, the page toolbar should already be in active inspect mode and the primary action should read `Exit Inspector`.
-       After a successful click, inspect mode should auto-exit while the toolbar stays visible, the primary action should change back to `Inspector`, and the page should immediately become navigable again.
-       The saved-selection state should also show a short summary card under the toolbar so the operator can see what was selected and know it has been saved.
-       Every page tab in the same dedicated profile should also keep the toolbar injected; tabs not created for the active inspect workflow should remain in the idle `Inspector` state until they are explicitly re-armed.
-       If the operator clicks `Inspector` after exit, inspect mode should re-enter immediately even before a new workflow is created.
+       On entry, the page panel should already be injected in the idle ready state, with the primary action labeled `Press this button to inspect`.
+       After the operator clicks that primary action, inspect mode should become active and the button should read `Inspecting`.
+       After a successful click, inspect mode should auto-exit while the panel stays visible, the primary action should change back to `Press this button to inspect`, and the page should immediately become navigable again.
+       The saved-selection state should stay inside the same panel and show `Selected`, `Content`, `Page`, and `Element`.
+       Every page tab in the same dedicated profile should also keep the panel injected; tabs should default to the same idle ready state until the operator explicitly starts inspect mode there.
+       If the operator clicks `Press this button to inspect` after selection or idle state, inspect mode should re-enter immediately even before a new workflow is created.
        Treat the selection as valid only if it clearly belongs to the current `workflowId` and follows a fresh operator click.
        If `await_selection` appears to return immediately with stale prior context, or the durable files only show older
        `updatedAt` / `payload.observedAt` values, restart capture or create a fresh workflow instead of presenting it as the new selection.
@@ -39,6 +40,9 @@ interface:
     7. After the user provides instruction text, call
        `scripts/inspect-capture apply --workflow-id "<workflowId>" --instruction "<user instruction>"`.
     8. Return the `ready_to_apply` payload and keep `selectedElement`, `position`, and `page` as mutation context.
-       Do not describe `apply` as removing the toolbar; it only completes the capture workflow.
-       The toolbar should stay injected across same-tab navigation, reloads, and same-document navigation, the most recent successful selection should remain recoverable for a later turn, and `selectionHistoryPath` should point at the JSONL selection trail.
+       Do not describe `apply` as removing the panel; it only completes the capture workflow.
+       The panel should stay injected across same-tab navigation, reloads, and same-document navigation, the most recent successful selection should remain recoverable for a later turn, and `selectionHistoryPath` should point at the JSONL selection trail.
+    9. If a later turn asks for the latest saved selection, call `scripts/inspect-capture latest`.
+       Do not infer "latest" from an older cached `workflowId`; later-turn recovery must come from the persisted most recent successful selection.
+       Treat this as a local fast path: do not reopen Chrome, resolve startup URLs, attach the runtime, or perform extra repo/browser search before answering.
   allow_implicit_invocation: true
