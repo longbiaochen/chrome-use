@@ -3,9 +3,15 @@
 [![English version](https://img.shields.io/badge/English%20version-README-blue)](./README.md)
 [![中文版](https://img.shields.io/badge/%E4%B8%AD%E6%96%87%E7%89%88-README.zh--CN-red)](./README.zh-CN.md)
 
-> ⚡ chrome-use 提供了一套更快的 coding agent 浏览器工作流。
-> 它把 inspect 和 auth 放进同一个专用 Chrome 会话里，保持长连接 remote debugging，并公开两个技能：
-> `chrome-inspect` 和 `chrome-auth`。
+> `chrome-use` 是一套给 coding agent 用的专用 Chrome 工作流。
+> 它解决的是“人已经点好了页面，但 agent 还拿不到可操作上下文”的低效交接问题，把 inspect 和 auth 放进同一个可复用的 Chrome 会话。
+> 其中最核心的能力是 `chrome-inspect`，底层由直接 CDP 控制驱动，并由配套技能 `chrome-auth` 补全登录与授权闭环。
+
+适合正在用 coding agent 做 Web 开发的人：产品工程师、基础设施工程师、工具作者，以及任何希望把浏览器协作链路做得更快、更稳的人。
+
+![`chrome-inspect` 演示](./docs/media/chrome-inspect-demo.gif)
+
+_演示：打开页面，进入 inspect 模式，完成一次真实点击后，工具条立即回显保存好的 selection 上下文。_
 
 ## 🚀 里程碑：`chrome-inspect` 已上线
 

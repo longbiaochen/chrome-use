@@ -3,15 +3,21 @@
 [![English version](https://img.shields.io/badge/English%20version-README-blue)](./README.md)
 [![中文版](https://img.shields.io/badge/%E4%B8%AD%E6%96%87%E7%89%88-README.zh--CN-red)](./README.zh-CN.md)
 
-> ⚡ chrome-use ships a faster browser workflow for coding agents.
-> It gives you a dedicated Chrome session for full inspect + auth loops, keeps a long-lived remote-debugging connection open, and exposes two public skills:
-> `chrome-inspect` and `chrome-auth`.
+> `chrome-use` is a dedicated Chrome workflow for coding agents.
+> It solves the slow handoff between human clicks and agent actions by keeping inspect and auth in one reusable Chrome session.
+> The flagship workflow is `chrome-inspect`, backed by direct CDP control and the companion skill `chrome-auth`.
+
+Built for people shipping web apps with coding agents: product engineers, infra engineers, tool builders, and anyone who wants a fast human-in-the-loop browser loop instead of generic browser automation.
+
+![`chrome-inspect` demo](./docs/media/chrome-inspect-demo.gif)
+
+_Demo: open a page, enter inspect mode, click once, and immediately get saved selection context back in the toolbar._
 
 ## 🚀 Milestone: `chrome-inspect` shipped
 
-`chrome-use` now ships `chrome-inspect`: a faster, full workflow for agent + operator collaboration on live pages.
+`chrome-use` now ships `chrome-inspect`: a fast, full workflow for agent + operator collaboration on live pages.
 
-What you get on the first screen:
+What you get immediately:
 
 - one dedicated `agent-profile`, separate from your default Chrome profile
 - direct Chrome DevTools Protocol (CDP) control over a remote-debuggable Chrome instance
