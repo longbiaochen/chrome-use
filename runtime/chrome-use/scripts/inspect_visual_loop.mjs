@@ -215,6 +215,8 @@ async function readToolbarMetrics(runtime, sessionState) {
       return { present: false, url: location.href, title: document.title };
     }
     const inspectButton = toolbar.querySelector('button[data-role="inspect"]');
+    const closeButton = toolbar.querySelector('button[data-role="close"]');
+    const row = toolbar.querySelector('[data-role="row"]');
     const body = toolbar.querySelector('[data-role="body"]');
     const selectionSelected = toolbar.querySelector('[data-field="selected"]');
     const selectionContent = toolbar.querySelector('[data-field="content"]');
@@ -222,32 +224,52 @@ async function readToolbarMetrics(runtime, sessionState) {
     const selectionElement = toolbar.querySelector('[data-role="selection-element"]');
     const toolbarRect = toolbar.getBoundingClientRect();
     const inspectRect = inspectButton.getBoundingClientRect();
+    const closeRect = closeButton ? closeButton.getBoundingClientRect() : null;
+    const rowRect = row ? row.getBoundingClientRect() : null;
+    const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
     const toolbarStyle = getComputedStyle(toolbar);
     const inspectStyle = getComputedStyle(inspectButton);
+    const bodyStyle = body ? getComputedStyle(body) : null;
+    const bodyRect = body ? body.getBoundingClientRect() : null;
     return {
       present: true,
       url: location.href,
       title: document.title,
       state: toolbar.dataset.state || null,
+      collapsed: toolbar.dataset.collapsed || null,
       hidden: toolbar.hidden,
       toolbar: {
         top: toolbarRect.top,
-        rightInset: window.innerWidth - toolbarRect.right,
+        rightInset: viewportWidth - toolbarRect.right,
         width: toolbarRect.width,
         height: toolbarRect.height,
         scrollHeight: toolbar.scrollHeight,
+      },
+      row: {
+        width: rowRect ? rowRect.width : 0,
+        right: rowRect ? rowRect.right : 0,
       },
       inspectButton: {
         width: inspectRect.width,
         height: inspectRect.height,
         top: inspectRect.top,
+        right: inspectRect.right,
         backgroundColor: inspectStyle.backgroundColor,
         active: inspectButton.dataset.active || null,
         text: inspectButton.textContent.trim(),
+        borderRadius: inspectStyle.borderRadius,
+      },
+      closeButton: {
+        present: !!closeButton,
+        width: closeRect ? closeRect.width : 0,
+        height: closeRect ? closeRect.height : 0,
+        display: closeButton ? getComputedStyle(closeButton).display : "none",
       },
       body: {
-        display: body ? getComputedStyle(body).display : "none",
-        width: body ? body.getBoundingClientRect().width : 0,
+        display: bodyStyle ? bodyStyle.display : "none",
+        width: bodyRect ? bodyRect.width : 0,
+        right: bodyRect ? bodyRect.right : 0,
+        borderRadius: bodyStyle ? bodyStyle.borderRadius : "0px",
       },
       selection: {
         selected: selectionSelected ? selectionSelected.textContent.trim() : "",
@@ -256,7 +278,14 @@ async function readToolbarMetrics(runtime, sessionState) {
         element: selectionElement ? selectionElement.textContent.trim() : "",
       },
       layout: {
-        buttonFillsRow: inspectRect.width >= (toolbarRect.width - 32),
+        buttonIsCompactSquare: Math.abs(inspectRect.width - inspectRect.height) <= 4,
+        buttonHasLabelRoom: inspectRect.width > (inspectRect.height + 40),
+        buttonFitsWithinToolbar: inspectRect.width <= (toolbarRect.width + 1),
+        buttonBodyRightAligned: !bodyRect || Math.abs(inspectRect.right - bodyRect.right) <= 1.5,
+        rowBodyWidthAligned: !bodyRect || Math.abs(rowRect.width - bodyRect.width) <= 1.5,
+      },
+      toolbarStyle: {
+        gap: toolbarStyle.rowGap || toolbarStyle.gap || null,
       },
     };
   })()`);
@@ -301,12 +330,20 @@ function assertToolbarMetrics(metrics, {
   expectedState,
   expectedButtonText,
   expectedBody = false,
+  expectedCollapsed,
 } = {}) {
   assertCondition(metrics?.present, "Toolbar is missing.", metrics);
   if (expectedState) {
     assertCondition(metrics.state === expectedState, `Toolbar state mismatch: expected ${expectedState}, got ${metrics.state}.`, metrics);
   }
-  if (expectedButtonText) {
+  if (expectedCollapsed !== undefined) {
+    assertCondition(
+      metrics.collapsed === (expectedCollapsed ? "true" : "false"),
+      `Toolbar collapsed mismatch: expected ${expectedCollapsed}, got ${metrics.collapsed}.`,
+      metrics,
+    );
+  }
+  if (expectedButtonText !== undefined) {
     assertCondition(
       metrics.inspectButton.text === expectedButtonText,
       `Toolbar button mismatch: expected "${expectedButtonText}", got "${metrics.inspectButton.text}".`,
@@ -323,11 +360,29 @@ function assertToolbarMetrics(metrics, {
   } else {
     assertCondition(metrics.body.display === "none", "Selection panel body should be hidden.", metrics);
   }
-  assertCondition(metrics.toolbar.top <= 20, "Toolbar is not pinned near the top edge.", metrics);
-  assertCondition(metrics.toolbar.rightInset <= 32, "Toolbar is not pinned near the right edge.", metrics);
+  assertCondition(metrics.toolbar.top <= 28, "Toolbar is not pinned near the top edge.", metrics);
+  assertCondition(metrics.toolbar.rightInset >= 16, "Toolbar is too close to the right edge.", metrics);
+  assertCondition(metrics.toolbar.rightInset <= 24, "Toolbar is not pinned near the right edge.", metrics);
   assertCondition(metrics.toolbar.width <= 360, "Toolbar is wider than the intended panel width.", metrics);
   assertCondition(metrics.toolbar.scrollHeight <= metrics.toolbar.height + 1, "Toolbar content overflowed vertically.", metrics);
-  assertCondition(metrics.layout.buttonFillsRow, "Inspect button no longer owns the top row.", metrics);
+  assertCondition(metrics.layout.buttonFitsWithinToolbar, "Inspect button overflowed the toolbar width.", metrics);
+  if (expectedCollapsed === true) {
+    assertCondition(metrics.layout.buttonIsCompactSquare, "Collapsed inspect button is not square enough.", metrics);
+    assertCondition(metrics.inspectButton.borderRadius === "12px", "Collapsed button radius drifted from the baseline.", metrics);
+    assertCondition(metrics.closeButton.display === "none", "Close button should stay hidden in collapsed mode.", metrics);
+  }
+  if (expectedCollapsed === false) {
+    assertCondition(metrics.layout.buttonHasLabelRoom, "Expanded inspect button did not grow to fit its label.", metrics);
+    assertCondition(metrics.inspectButton.height >= 36 && metrics.inspectButton.height <= 40, "Expanded button height drifted from the compact control range.", metrics);
+    assertCondition(metrics.inspectButton.borderRadius === "18px", "Expanded button radius drifted from the baseline.", metrics);
+    assertCondition(metrics.closeButton.present, "Close button is missing in expanded mode.", metrics);
+    assertCondition(metrics.closeButton.display !== "none", "Close button should be visible in expanded mode.", metrics);
+    assertCondition(metrics.closeButton.width === 36 && metrics.closeButton.height === 36, "Close button size drifted from the compact square baseline.", metrics);
+  }
+  if (expectedBody) {
+    assertCondition(metrics.body.borderRadius === "16px", "Details panel radius drifted from the baseline.", metrics);
+    assertCondition(metrics.layout.rowBodyWidthAligned, "Top action row and details panel no longer share the same width.", metrics);
+  }
 }
 
 async function recordStep(runtime, sessionState, outputDir, name, expectations = {}) {
@@ -406,12 +461,14 @@ async function main() {
     logStep("Validating initial idle state");
     results.push(await recordStep(runtime, sessionState, outputDir, "01-initial-idle", {
       expectedState: "idle",
-      expectedButtonText: "Press this button to inspect",
+      expectedButtonText: "",
+      expectedCollapsed: true,
     }));
     logStep("Validating secondary tab idle injection");
     results.push(await recordStep(runtime, secondarySessionState, outputDir, "02-secondary-tab-idle", {
       expectedState: "idle",
-      expectedButtonText: "Press this button to inspect",
+      expectedButtonText: "",
+      expectedCollapsed: true,
     }));
 
     logStep("Entering inspect mode");
@@ -419,13 +476,15 @@ async function main() {
     results.push(await recordStep(runtime, sessionState, outputDir, "03-inspecting", {
       expectedState: "inspecting",
       expectedButtonText: "Inspecting",
+      expectedCollapsed: false,
     }));
 
     logStep("Reloading page while idle workflow remains injected");
     await reloadTarget(runtime, sessionState);
     results.push(await recordStep(runtime, sessionState, outputDir, "04-idle-after-reload", {
       expectedState: "idle",
-      expectedButtonText: "Press this button to inspect",
+      expectedButtonText: "",
+      expectedCollapsed: true,
     }));
 
     logStep("Re-entering inspect mode");
@@ -433,13 +492,15 @@ async function main() {
     results.push(await recordStep(runtime, sessionState, outputDir, "05-inspecting-again", {
       expectedState: "inspecting",
       expectedButtonText: "Inspecting",
+      expectedCollapsed: false,
     }));
 
     logStep("Triggering same-document navigation");
     await navigateHash(runtime, sessionState, "#details");
     results.push(await recordStep(runtime, sessionState, outputDir, "06-same-document-idle", {
       expectedState: "idle",
-      expectedButtonText: "Press this button to inspect",
+      expectedButtonText: "",
+      expectedCollapsed: true,
     }));
 
     logStep("Entering inspect mode after same-document navigation");
@@ -447,6 +508,7 @@ async function main() {
     results.push(await recordStep(runtime, sessionState, outputDir, "07-same-document-inspecting", {
       expectedState: "inspecting",
       expectedButtonText: "Inspecting",
+      expectedCollapsed: false,
     }));
 
     logStep("Selecting the fixture target");
@@ -465,6 +527,7 @@ async function main() {
       expectedState: "idle_selected",
       expectedButtonText: "Press this button to inspect",
       expectedBody: true,
+      expectedCollapsed: false,
     }));
 
     logStep("Navigating to the second fixture page");
@@ -472,16 +535,18 @@ async function main() {
     await waitForTargetUrl(runtime, sessionState, `${fixtureServer.origin}/next.html`, "same-tab next page navigation");
     results.push(await recordStep(runtime, sessionState, outputDir, "09-selected-after-navigation", {
       expectedState: "idle_selected",
-      expectedButtonText: "Press this button to inspect",
-      expectedBody: true,
+      expectedButtonText: "",
+      expectedBody: false,
+      expectedCollapsed: true,
     }));
 
     logStep("Triggering same-document navigation on the second page");
     await clickSelector(runtime, sessionState, "#fixture-notes-link");
     results.push(await recordStep(runtime, sessionState, outputDir, "10-selected-after-hash-nav", {
       expectedState: "idle_selected",
-      expectedButtonText: "Press this button to inspect",
-      expectedBody: true,
+      expectedButtonText: "",
+      expectedBody: false,
+      expectedCollapsed: true,
     }));
 
     logStep("Re-entering inspect mode without a workflow");
@@ -489,6 +554,7 @@ async function main() {
     results.push(await recordStep(runtime, sessionState, outputDir, "11-manual-reenter-inspecting", {
       expectedState: "inspecting",
       expectedButtonText: "Inspecting",
+      expectedCollapsed: false,
     }));
 
     logStep("Selecting a target without creating a workflow");
@@ -497,6 +563,7 @@ async function main() {
       expectedState: "idle_selected",
       expectedButtonText: "Press this button to inspect",
       expectedBody: true,
+      expectedCollapsed: false,
     }));
 
     logStep("Starting a new capture on the second page");
@@ -504,7 +571,8 @@ async function main() {
     assertCondition(Boolean(secondBegin?.workflowId), "Expected second capture workflow.", secondBegin);
     results.push(await recordStep(runtime, sessionState, outputDir, "13-second-capture-idle", {
       expectedState: "idle",
-      expectedButtonText: "Press this button to inspect",
+      expectedButtonText: "",
+      expectedCollapsed: true,
     }));
 
     logStep("Entering inspect mode for the second capture");
@@ -512,6 +580,7 @@ async function main() {
     results.push(await recordStep(runtime, sessionState, outputDir, "14-second-capture-inspecting", {
       expectedState: "inspecting",
       expectedButtonText: "Inspecting",
+      expectedCollapsed: false,
     }));
 
     logStep("Validating narrow viewport layout");
@@ -519,6 +588,7 @@ async function main() {
     results.push(await recordStep(runtime, sessionState, outputDir, "15-narrow-viewport", {
       expectedState: "inspecting",
       expectedButtonText: "Inspecting",
+      expectedCollapsed: false,
     }));
     await clearViewport(runtime, sessionState);
 
@@ -556,6 +626,7 @@ async function main() {
       expectedState: "idle_selected",
       expectedButtonText: "Press this button to inspect",
       expectedBody: true,
+      expectedCollapsed: false,
     }));
 
     logStep("Clearing the workflow");
@@ -569,6 +640,7 @@ async function main() {
       expectedState: "idle_selected",
       expectedButtonText: "Press this button to inspect",
       expectedBody: true,
+      expectedCollapsed: false,
     }));
     await closeInspectRuntime(runtime.cdp, runtime.state);
     runtimeClosed = true;

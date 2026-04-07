@@ -1,6 +1,6 @@
-# Chrome Inspector milestone
+# `chrome-inspect` milestone
 
-ChromeUse now ships a full inspect-first workflow for coding agents.
+chrome-use now ships a full inspect-first workflow for coding agents.
 
 ## What shipped
 
@@ -18,14 +18,14 @@ Most browser tools are either:
 - generic automation layers, or
 - generic debugging layers
 
-ChromeUse is narrower and more opinionated:
+chrome-use is narrower and more opinionated:
 
 - one dedicated agent profile, separate from the default Chrome profile
 - one dedicated remote-debuggable Chrome runtime
 - one inspect workflow that maps cleanly to agent turns: `begin -> await -> apply`
 - one auth companion skill that preserves the same session state
 
-That gives ChromeUse a tighter local loop for coding agents working on real apps:
+That gives chrome-use a tighter local loop for coding agents working on real apps:
 
 - less startup churn
 - less profile confusion
@@ -48,17 +48,28 @@ This milestone was verified with:
 - `bash scripts/test-runtime.sh`
 - `node runtime/chrome-use/scripts/inspect_visual_loop.mjs`
 
-## Launch post draft
+## Launch message stack
 
-Pain point: browser agents still lose time between “the user clicked the thing” and “the agent has usable DOM context”.
+Use this stack for launch-facing copy:
 
-ChromeUse now fixes that with a dedicated Chrome Inspector workflow:
+1. pain point: what is still slow, flaky, or broken in the status quo
+2. shipped capability: what `chrome-use` now does
+3. user payoff: why the workflow is faster, cleaner, or more complete
+4. credibility proof: dedicated agent profile, direct CDP runtime, shared auth + inspect session
+5. CTA: try it, star it, follow it, and open PRs
 
-- first click completes the active inspect workflow immediately
-- persistent inspect panel survives reloads and navigation
-- dedicated agent profile keeps auth and inspect state isolated from your normal Chrome
+## Approved X templates
 
-Under the hood it is a fast CDP runtime, not a loose browser macro.
-`chrome-inspect` and `chrome-auth` work together in the same dedicated session.
+### English template
 
-GitHub: https://github.com/longbiaochen/chrome-use
+We just shipped `chrome-inspect` in `chrome-use`.
+
+- faster handoff from user click to mutation-ready DOM context
+- full inspect + auth workflow in one dedicated Chrome session
+- direct CDP runtime with a dedicated agent profile, so the flow stays fast and predictable
+
+Try it, star the repo, and tell us what to build next: https://github.com/longbiaochen/chrome-use
+
+### Chinese template
+
+`chrome-inspect` 已经在 `chrome-use` 里正式发布：现在浏览器里的点选可以更快回到 agent 手里，直接变成可编辑的 DOM 上下文，而且 `chrome-inspect` 和 `chrome-auth` 会在同一个 dedicated agent profile 里跑完整流程，既快又稳，欢迎试用、star、follow，也欢迎直接来提 issue 和 PR：https://github.com/longbiaochen/chrome-use

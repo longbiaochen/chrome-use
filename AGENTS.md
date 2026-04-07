@@ -36,6 +36,27 @@
 - On macOS, open or reuse the dedicated Chrome profile in the background so MCP startup does not steal user focus.
 - Use repository checks when touching runtime/packaging behavior: `bash scripts/verify-manifest.sh` and `bash scripts/test-runtime.sh`.
 - For inspect-toolbar behavior changes, also run `node runtime/chrome-use/scripts/inspect_visual_loop.mjs`.
+- Visual Design Baseline
+  - Base compact UI on Apple-inspired principles from the HIG and Apple UI design tips: restraint, clarity, alignment, safe spacing, consistent control geometry, and strong visual hierarchy.
+  - Use a `4pt` spacing grid. Preferred steps are `4 / 8 / 12 / 16 / 20 / 24`.
+  - Floating UI must keep a safe inset from viewport edges. Default top/right inset is `20px`; acceptable range is `16-24px`. Never pin overlays flush to the viewport edge.
+  - Use one coordinated radius family per component tree. Do not mix sharp rectangles, low-radius boxes, and fully pill-shaped controls unless hierarchy clearly demands it.
+  - Default compact radius scale:
+    - square utility button: `12px`
+    - pill / expanded action button: `18px`
+    - floating panel / overlay card: `16px`
+  - Default compact padding scale:
+    - square icon button: fixed square, `0` horizontal padding
+    - expanded action button: `12px` horizontal padding, `36-40px` height
+    - floating panel body: `12px` internal padding
+  - Minimum readable text size in compact overlays is `11px`; default compact UI text is `12px`.
+  - Mouse-first compact controls should be at least `36px` tall. If touch use is plausible, prefer `44px`.
+  - Width should be content-driven. Do not give compact toolbars or buttons extra horizontal space beyond icon, text, and padding.
+  - Align related edges deliberately. Buttons, labels, and content blocks should share a clear left or right edge; avoid almost-aligned geometry.
+  - Keep controls visually distinct from content. The primary action should read as the affordance; supporting content should read as secondary information beneath or attached to it.
+  - Collapsed state should show only the affordance. Expanded state should reveal label and supporting content without changing to an unrelated shape language.
+  - Avoid cramped text, oversized empty gutters, and arbitrary spacing jumps. Increase line height or local spacing before increasing overall panel width.
+  - When UI geometry changes materially, update visual assertions in the repo so spacing, inset, radius, and alignment stay enforced.
 - Complete the full requested task before returning whenever feasible; do not stop after a partial implementation if a known issue remains reproducible.
 - When a validation step still exposes a concrete bug or flaky runtime path that is in scope for the current task, continue debugging and fix it before responding.
 - Do not claim Windows support unless it has been tested end-to-end.
@@ -44,3 +65,41 @@
   - lead with the pain point
   - list the 2-3 concrete fixes
   - keep the GitHub link in the post
+- Launch messaging must be decision-complete before posting. Do not improvise launch copy at publish time.
+- For public launch-facing naming, always use:
+  - `chrome-use`
+  - `chrome-inspect`
+  - `chrome-auth`
+- For milestone posts on X, do not default to in-place editing. If the live post is weak or structurally wrong, delete it, publish a reviewed replacement, and verify the profile timeline afterward.
+- Default X launch format for this repo is one bilingual post:
+  - English first
+  - Chinese second
+- English X launch structure must be:
+  - one opening summary sentence that says what shipped
+  - 2-3 short benefit-led bullets
+  - one closing line with CTA plus the GitHub repo link
+  - wrap repo names, skill names, and command-like feature names in backticks when it improves scanability
+- Chinese X launch structure must be:
+  - one compact paragraph
+  - say what shipped, why it matters, and invite people to try, star, follow, or open PRs
+  - include the GitHub repo link in that paragraph
+  - wrap repo names, skill names, and command-like feature names in backticks when it improves scanability
+- Launch-post tone should be energetic and user-facing:
+  - lead with user payoff, not internal implementation
+  - emphasize faster workflows, full end-to-end flow, dedicated agent profile, direct CDP runtime, and shared auth + inspect session when they apply
+  - make the product feel sharp, fast, and complete
+- Avoid weak launch patterns:
+  - implementation-only bullets without outcome language
+  - missing repo link
+  - flat “we shipped X” wording without urgency or payoff
+  - low-energy phrasing that reads like internal notes
+- README launch copy must be treated as part of release quality:
+  - the first screen should say what shipped, why it matters, and who it is for
+  - launch sections should lead with outcomes, then architecture proof, then quick-start path
+  - bilingual docs should stay structurally aligned, but translation should be idiomatic rather than mechanical
+  - milestone README updates are required, not optional cleanup
+- Open-source growth guidance for this repo:
+  - always keep the README hero section polished before launch
+  - always include clear contribution signals near top-level docs when appropriate, such as PRs welcome, release notes, roadmap, or issue entry points
+  - always route social posts back to the GitHub repo
+  - bias toward crisp demos, clear pain points, and contributor-friendly repo presentation

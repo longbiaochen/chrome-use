@@ -1,23 +1,29 @@
 # chrome-use
 
-> ⚡ ChromeUse is a fast browser skill set for coding agents.
-> It runs Chrome through a dedicated agent profile, keeps a long-lived remote-debugging session open, and exposes two public skills:
+[![English version](https://img.shields.io/badge/English%20version-README-blue)](./README.md)
+[![中文版](https://img.shields.io/badge/%E4%B8%AD%E6%96%87%E7%89%88-README.zh--CN-red)](./README.zh-CN.md)
+
+> ⚡ chrome-use ships a faster browser workflow for coding agents.
+> It gives you a dedicated Chrome session for full inspect + auth loops, keeps a long-lived remote-debugging connection open, and exposes two public skills:
 > `chrome-inspect` and `chrome-auth`.
 
-## 🚀 Milestone: Chrome Inspector shipped
+## 🚀 Milestone: `chrome-inspect` shipped
 
-ChromeUse now has a complete Chrome Inspector workflow for agent + operator collaboration on live pages:
+`chrome-use` now ships `chrome-inspect`: a faster, full workflow for agent + operator collaboration on live pages.
+
+What you get on the first screen:
 
 - one dedicated `agent-profile`, separate from your default Chrome profile
 - direct Chrome DevTools Protocol (CDP) control over a remote-debuggable Chrome instance
 - a persistent in-page inspect panel that survives reloads, same-tab navigation, and same-document navigation
-- a `begin -> await -> apply` workflow that returns mutation-ready DOM context
-- a `latest` fast path for recovering the most recent saved selection without reopening Chrome
+- a `begin -> await -> apply` workflow that returns mutation-ready DOM context from the first real click
 - companion auth flows through `chrome-auth`, so login and inspection live in the same dedicated browser session
+- a `latest` fast path for recovering the most recent saved selection without reopening Chrome
 
-This repo is opinionated on purpose: it is not a generic browser MCP wrapper. It is a skill set designed for fast, repeatable, local-first browser work with a human in the loop.
+This repo is opinionated on purpose: it is not a generic browser MCP wrapper. It is a local-first skill set for people who want faster inspect handoff, stable auth state, and a cleaner human-in-the-loop browser workflow.
+Try it, star it, and open a PR if there is a browser loop you want `chrome-use` to own.
 
-## ✨ Why ChromeUse feels different
+## ✨ Why chrome-use feels different
 
 ### `chrome-inspect`
 
@@ -35,7 +41,7 @@ This repo is opinionated on purpose: it is not a generic browser MCP wrapper. It
 
 ## 🧠 Architecture
 
-ChromeUse uses a dedicated browser runtime instead of your normal Chrome session:
+chrome-use uses a dedicated browser runtime instead of your normal Chrome session:
 
 - dedicated profile dir: `~/.chrome-use/agent-profile`
 - dedicated state dir: `~/.chrome-use/state`
@@ -52,17 +58,17 @@ That design matters:
 
 On macOS, the launcher keeps the dedicated Chrome instance in the background so agent activity does not steal focus. The dedicated `agent-profile` must remain a single-window Chrome instance; other Chrome windows under other profiles are allowed.
 
-## 🥊 Where ChromeUse fits
+## 🥊 Where chrome-use fits
 
-ChromeUse is best understood as an opinionated skill layer on top of Chrome itself.
+chrome-use is best understood as an opinionated skill layer on top of Chrome itself.
 
-| Tool | What it is great at | Where ChromeUse is stronger |
+| Tool | What it is great at | Where chrome-use is stronger |
 | --- | --- | --- |
-| Chrome DevTools MCP | General-purpose browser debugging, automation, traces, network, console, screenshots | ChromeUse adds an inspect-first operator workflow, persistent in-page panel UX, dedicated profile discipline, and mutation-ready selection handoff |
-| `agent-browser` | Fast CLI automation and accessibility/snapshot-driven browser control | ChromeUse is stronger when an operator needs to point at a live DOM target and hand exact page context back to an agent |
-| `browser-use` | High-level browser agents, cloud/browser infrastructure, and broad automation frameworks | ChromeUse is leaner and more local-first for coding-agent workflows that need precise inspection, persistent auth, and minimal runtime indirection |
+| Chrome DevTools MCP | General-purpose browser debugging, automation, traces, network, console, screenshots | chrome-use adds an inspect-first operator workflow, persistent in-page panel UX, dedicated profile discipline, and mutation-ready selection handoff |
+| `agent-browser` | Fast CLI automation and accessibility/snapshot-driven browser control | chrome-use is stronger when an operator needs to point at a live DOM target and hand exact page context back to an agent |
+| `browser-use` | High-level browser agents, cloud/browser infrastructure, and broad automation frameworks | chrome-use is leaner and more local-first for coding-agent workflows that need precise inspection, persistent auth, and minimal runtime indirection |
 
-ChromeUse is intentionally narrower than those tools. That narrowness is the advantage: it is optimized for live inspect/edit/auth loops instead of trying to be every browser tool at once.
+chrome-use is intentionally narrower than those tools. That narrowness is the advantage: it is optimized for live inspect/edit/auth loops instead of trying to be every browser tool at once.
 
 ## 📦 Public skills
 
@@ -79,7 +85,7 @@ Both public skills may be invoked explicitly or implicitly.
 
 ## 📝 Release note
 
-- [Chrome Inspector milestone release notes](./docs/releases/chrome-inspector-milestone.md)
+- [`chrome-inspect` milestone release notes](./docs/releases/chrome-inspector-milestone.md)
 
 ## Fast install
 

@@ -882,6 +882,7 @@ async function finalizeWorkflowSelection(cdp, state, workflow, payload, targetId
     cancelled: false,
     captureActive: false,
     selectedDetails: buildToolbarSelectionDetails(payload),
+    collapsed: false,
     reason: "selection_recorded",
   });
   await persistSessionState(state.store, state, { status: "bridge_ready" });
@@ -1245,6 +1246,7 @@ async function updatePageToolbarState(cdp, sessionState, options = {}) {
       cancelled: !!options.cancelled,
       captureActive: !!options.captureActive,
       selectedDetails: options.selectedDetails || null,
+      collapsed: options.collapsed ?? null,
     },
   );
   try {
@@ -1325,6 +1327,7 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
   cancelled = false,
   captureActive = true,
   selectedDetails = null,
+  collapsed = null,
 } = {}) {
   return `(() => {
     const key = "__chromeInspectAgentState";
@@ -1357,6 +1360,7 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
       page: "",
       element: "",
     })};
+    const requestedCollapsed = ${collapsed === null ? "null" : (collapsed ? "true" : "false")};
     state.workflowId = ${JSON.stringify(workflowId)};
     state.captureToken = ${JSON.stringify(captureToken)};
     state.captureActive = ${captureActive ? "true" : "false"};
@@ -1365,6 +1369,7 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
       state.selectedElement = null;
       state.selectedDetails = incomingSelectedDetails || { selected: "", content: "", page: "", element: "" };
       state.toolbarState = initialState;
+      state.toolbarCollapsed = requestedCollapsed === null ? initialState === states.idle : !!requestedCollapsed;
       state.cancelled = initialState === states.exited;
       state.armedAt = Date.now();
     } else {
@@ -1375,6 +1380,9 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
         element: "",
       };
       state.toolbarState = initialState;
+      state.toolbarCollapsed = requestedCollapsed === null
+        ? (typeof state.toolbarCollapsed === "boolean" ? state.toolbarCollapsed : initialState === states.idle)
+        : !!requestedCollapsed;
       state.cancelled = initialState === states.exited;
       state.armedAt = state.armedAt || Date.now();
     }
@@ -1421,32 +1429,44 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
         style.textContent = \`
 [data-chrome-inspect-toolbar] {
   position: fixed;
-  top: 14px;
-  right: 14px;
+  top: 20px;
+  right: 20px;
   z-index: 2147483647;
   display: grid;
-  gap: 10px;
-  width: min(360px, calc(100vw - 24px));
-  padding: 12px;
+  justify-items: end;
+  gap: 4px;
+  width: auto;
+  max-width: min(420px, calc(100vw - 40px));
+  padding: 0;
   border-radius: 16px;
-  background: rgba(16, 16, 16, 0.92);
+  background: transparent;
   color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
   font: 600 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  backdrop-filter: blur(12px);
   box-sizing: border-box;
 }
 [data-chrome-inspect-toolbar] [data-role="row"] {
-  display: block;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+[data-chrome-inspect-toolbar][data-state="idle_selected"][data-collapsed="false"] [data-role="row"] {
+  width: min(304px, calc(100vw - 40px));
 }
 [data-chrome-inspect-toolbar] [data-role="body"] {
   display: none;
   gap: 8px;
-  padding-top: 2px;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  width: min(304px, calc(100vw - 40px));
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(16, 16, 16, 0.9);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(12px);
+  box-sizing: border-box;
 }
-[data-chrome-inspect-toolbar][data-state="idle_selected"] [data-role="body"] {
+[data-chrome-inspect-toolbar][data-state="idle_selected"][data-collapsed="false"] [data-role="body"] {
   display: grid;
 }
 [data-chrome-inspect-toolbar] [data-role="label"] {
@@ -1460,31 +1480,68 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  width: 100%;
-  height: 28px;
-  border: 1px solid transparent;
-  border-radius: 999px;
+  gap: 8px;
+  width: auto;
+  min-width: 0;
+  height: 36px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 18px;
   cursor: pointer;
   color: #fff;
-  background: rgba(255, 255, 255, 0.06);
-  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, opacity 120ms ease;
+  background: rgba(255, 102, 0, 0.96);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.18);
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, opacity 120ms ease, box-shadow 120ms ease;
+  box-sizing: border-box;
+}
+[data-chrome-inspect-toolbar] button:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.72);
+  outline-offset: 2px;
 }
 [data-chrome-inspect-toolbar] button:hover {
   transform: translateY(-1px);
-  background: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.22);
 }
 [data-chrome-inspect-toolbar] button[data-role="inspect"] {
   padding: 0 12px;
-  background: #ff6600;
-  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 102, 0, 0.96);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+[data-chrome-inspect-toolbar][data-collapsed="true"] button[data-role="inspect"] {
+  width: 36px;
+  min-width: 36px;
+  padding: 0;
+  border-radius: 12px;
+}
+[data-chrome-inspect-toolbar][data-state="idle_selected"][data-collapsed="false"] button[data-role="inspect"] {
+  flex: 1 1 auto;
+  width: 100%;
 }
 [data-chrome-inspect-toolbar] button[data-role="inspect"][data-active="false"] {
-  opacity: 0.92;
+  opacity: 1;
 }
 [data-chrome-inspect-toolbar] button[data-role="inspect"][data-active="true"] {
-  background: #ff6600;
+  background: rgba(255, 102, 0, 1);
   border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
+}
+[data-chrome-inspect-toolbar] button[data-role="close"] {
+  width: 36px;
+  min-width: 36px;
+  padding: 0;
+  border-radius: 12px;
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(16, 16, 16, 0.88);
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.16);
+}
+[data-chrome-inspect-toolbar] button[data-role="close"]:hover {
+  background: rgba(32, 32, 32, 0.96);
+}
+[data-chrome-inspect-toolbar][data-collapsed="true"] button[data-role="close"] {
+  display: none;
+}
+[data-chrome-inspect-toolbar][data-collapsed="true"] button[data-role="inspect"] span {
+  display: none;
 }
 [data-chrome-inspect-toolbar] button svg {
   width: 14px;
@@ -1505,6 +1562,8 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
 }
 [data-chrome-inspect-toolbar] [data-role="selection-page"],
 [data-chrome-inspect-toolbar] [data-role="selection-element"] {
+  display: block;
+  margin-top: 4px;
   color: rgba(255, 255, 255, 0.76);
   font-weight: 500;
   font-size: 11px;
@@ -1563,23 +1622,24 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
       if (!state.toolbar) return;
       const toolbarState = state.resolveToolbarState();
       state.toolbar.dataset.state = toolbarState;
+      state.toolbar.dataset.collapsed = state.toolbarCollapsed ? "true" : "false";
       if (state.toolbarSelected) {
-        state.toolbarSelected.textContent = toolbarState === states.idleSelected
+        state.toolbarSelected.textContent = toolbarState === states.idleSelected && !state.toolbarCollapsed
           ? (state.selectedDetails?.selected || "Selection captured.")
           : "";
       }
       if (state.toolbarContent) {
-        state.toolbarContent.textContent = toolbarState === states.idleSelected
+        state.toolbarContent.textContent = toolbarState === states.idleSelected && !state.toolbarCollapsed
           ? (state.selectedDetails?.content || "")
           : "";
       }
       if (state.toolbarPage) {
-        state.toolbarPage.textContent = toolbarState === states.idleSelected
+        state.toolbarPage.textContent = toolbarState === states.idleSelected && !state.toolbarCollapsed
           ? (state.selectedDetails?.page || "")
           : "";
       }
       if (state.toolbarElement) {
-        state.toolbarElement.textContent = toolbarState === states.idleSelected
+        state.toolbarElement.textContent = toolbarState === states.idleSelected && !state.toolbarCollapsed
           ? (state.selectedDetails?.element || "")
           : "";
       }
@@ -1588,7 +1648,7 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
         state.toolbarToggleButton.dataset.active = isInspecting ? "true" : "false";
         state.toolbarToggleButton.querySelector("span").textContent = isInspecting
           ? "Inspecting"
-          : "Press this button to inspect";
+          : (state.toolbarCollapsed ? "" : "Press this button to inspect");
       }
     };
 
@@ -1607,13 +1667,20 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
         selected: state.selected || null,
         cancelled: toolbarState === states.exited,
         mode: toolbarState,
+        collapsed: !!state.toolbarCollapsed,
       };
     };
 
-    state.transitionTo = (nextToolbarState, { clearSelection = false, captureActive = state.captureActive } = {}) => {
+    state.transitionTo = (
+      nextToolbarState,
+      { clearSelection = false, captureActive = state.captureActive, collapsed = null } = {},
+    ) => {
       state.toolbarState = nextToolbarState;
       state.cancelled = nextToolbarState === states.exited;
       state.captureActive = !!captureActive;
+      state.toolbarCollapsed = collapsed === null
+        ? (nextToolbarState === states.idle)
+        : !!collapsed;
       if (clearSelection) {
         state.selected = null;
         state.selectedElement = null;
@@ -1623,6 +1690,16 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
       state.updateToolbar();
       state.updateHeartbeat();
       state.reportToolbarState("transition");
+    };
+
+    state.closeToolbar = () => {
+      state.toolbarState = states.exited;
+      state.cancelled = true;
+      state.captureActive = false;
+      state.toolbarCollapsed = true;
+      state.updateHeartbeat();
+      state.reportToolbarState("closed");
+      state.cleanup();
     };
 
     state.ensureToolbar = () => {
@@ -1639,6 +1716,12 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
                 <path d="M10.5 10.5L14 14"></path>
               </svg>
               <span>Press this button to inspect</span>
+            </button>
+            <button type="button" data-role="close" data-chrome-inspect-action="close" aria-label="Close inspect toolbar">
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M4 4L12 12"></path>
+                <path d="M12 4L4 12"></path>
+              </svg>
             </button>
           </div>
           <div data-role="body" aria-live="polite">
@@ -1665,6 +1748,7 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
       state.toolbar = toolbar;
       state.toolbarBody = toolbar.querySelector('[data-role="body"]');
       state.toolbarToggleButton = toolbar.querySelector('button[data-chrome-inspect-action="toggle"]');
+      state.toolbarCloseButton = toolbar.querySelector('button[data-chrome-inspect-action="close"]');
       state.toolbarSelected = toolbar.querySelector('[data-field="selected"]');
       state.toolbarContent = toolbar.querySelector('[data-field="content"]');
       state.toolbarPage = toolbar.querySelector('[data-role="selection-page"]');
@@ -1674,13 +1758,22 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
           event.preventDefault();
           event.stopPropagation();
           if (state.resolveToolbarState() === states.inspecting) {
-            state.transitionTo(states.idle, { clearSelection: false, captureActive: false });
+            state.transitionTo(states.idle, { clearSelection: false, captureActive: false, collapsed: false });
             return;
           }
-          state.transitionTo(states.inspecting, { clearSelection: true, captureActive: true });
+          state.transitionTo(states.inspecting, { clearSelection: true, captureActive: true, collapsed: false });
         };
         state.toolbarToggleButton.addEventListener("click", state.handleToggleClick, true);
         state.toolbarToggleButton.__chromeInspectBound = true;
+      }
+      if (state.toolbarCloseButton && !state.toolbarCloseButton.__chromeInspectBound) {
+        state.handleCloseClick = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          state.closeToolbar();
+        };
+        state.toolbarCloseButton.addEventListener("click", state.handleCloseClick, true);
+        state.toolbarCloseButton.__chromeInspectBound = true;
       }
       state.updateToolbar();
       return toolbar;
@@ -1766,7 +1859,7 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
           return parts.join(" > ");
         })(),
       };
-      state.transitionTo(states.idleSelected, { captureActive: false });
+      state.transitionTo(states.idleSelected, { captureActive: false, collapsed: false });
     };
 
     state.applyMode = () => {
@@ -1817,6 +1910,9 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
       if (state.toolbarToggleButton && state.handleToggleClick) {
         state.toolbarToggleButton.removeEventListener("click", state.handleToggleClick, true);
       }
+      if (state.toolbarCloseButton && state.handleCloseClick) {
+        state.toolbarCloseButton.removeEventListener("click", state.handleCloseClick, true);
+      }
       if (state.heartbeatTimer) window.clearInterval(state.heartbeatTimer);
       if (state.toolbarObserver) state.toolbarObserver.disconnect();
       if (state.domReadyHandler) document.removeEventListener("DOMContentLoaded", state.domReadyHandler);
@@ -1826,6 +1922,7 @@ function buildPageSelectionCaptureSource(workflowId, captureToken, {
       document.documentElement.style.cursor = state.previousCursor || "";
       state.listenerInstalled = false;
       state.toolbar = null;
+      state.toolbarCloseButton = null;
       state.toolbarObserver = null;
       state.heartbeatTimer = null;
       state.styleElement = null;
@@ -1914,6 +2011,7 @@ export async function reflectSelectionOnPage(cdp, sessionState, workflowId, payl
     cancelled: false,
     captureActive: false,
     selectedDetails: buildToolbarSelectionDetails(payload),
+    collapsed: false,
   });
 }
 
@@ -1931,6 +2029,7 @@ async function armPageSelectionCapture(cdp, state, workflow) {
             captureToken: workflow.captureToken,
             mode: "idle",
             cancelled: false,
+            collapsed: true,
             reason: "workflow_begin",
           })
         : await applyToolbarStateForTarget(cdp, state, targetId, {
@@ -1940,6 +2039,7 @@ async function armPageSelectionCapture(cdp, state, workflow) {
             cancelled: false,
             captureActive: false,
             selectedDetails: null,
+            collapsed: true,
             reason: "workflow_begin_idle",
           });
       armedAt = meta?.armedAt || armedAt;
@@ -2482,6 +2582,7 @@ async function awaitWorkflowSelection(state, cdp, workflowId, waitForSelectionMs
         cancelled: false,
         captureActive: false,
         selectedDetails: buildToolbarSelectionDetails(finalized.payload),
+        collapsed: false,
         reason: "await_selection_ready",
       });
       await persistSessionState(state.store, state, { status: "bridge_ready" });
@@ -2695,6 +2796,7 @@ export async function handleInspectAction(cdp, state, args, messageId) {
     cancelled: false,
     captureActive: false,
     selectedDetails: buildToolbarSelectionDetails(workflow.payload),
+    collapsed: false,
     reason: "instruction_recorded",
   });
   logSignal("instruction_recorded", { workflowId, sequence: updated.sequence });
@@ -2916,6 +3018,9 @@ async function attachPageTarget(cdp, targetInfo, state) {
         mode: signal.mode || state.captureMetaByTargetId.get(targetInfo.targetId)?.mode || "exited",
         cancelled: !!signal.cancelled,
         captureActive: !!signal.captureActive,
+        collapsed: typeof signal.collapsed === "boolean"
+          ? signal.collapsed
+          : state.captureMetaByTargetId.get(targetInfo.targetId)?.collapsed,
       });
       void syncOverlayModeForToolbarSignal(cdp, sessionState, nextMeta).catch((err) => {
         state.lastObservedError = `overlay sync failed for ${targetInfo.targetId}: ${err?.message || err}`;
@@ -2965,6 +3070,7 @@ async function attachPageTarget(cdp, targetInfo, state) {
           mode: "idle",
           cancelled: false,
           captureActive: false,
+          collapsed: true,
           reason: "target_attached",
         });
       }
@@ -2979,6 +3085,7 @@ async function attachPageTarget(cdp, targetInfo, state) {
       mode: "idle",
       cancelled: false,
       captureActive: false,
+      collapsed: true,
       reason: "target_attached_idle",
     });
   }
@@ -3085,6 +3192,7 @@ async function applyToolbarStateForTarget(cdp, state, targetId, {
   cancelled = false,
   captureActive = false,
   selectedDetails = null,
+  collapsed = null,
   reason = "manual",
 } = {}) {
   const sessionState = state.targetsById.get(targetId);
@@ -3097,7 +3205,7 @@ async function applyToolbarStateForTarget(cdp, state, targetId, {
     sessionState,
     workflowId,
     captureToken,
-    { mode, cancelled, captureActive, selectedDetails },
+    { mode, cancelled, captureActive, selectedDetails, collapsed },
   );
   const meta = updateCaptureMetaForTarget(state, targetId, {
     workflowId,
@@ -3107,6 +3215,7 @@ async function applyToolbarStateForTarget(cdp, state, targetId, {
     cancelled,
     captureActive,
     selectedDetails,
+    collapsed,
   });
   logSignal("page_toolbar_synced", {
     targetId,
@@ -3116,6 +3225,7 @@ async function applyToolbarStateForTarget(cdp, state, targetId, {
     cancelled,
     captureActive,
     selectedDetails,
+    collapsed,
     reason,
   });
   return meta;
@@ -3170,6 +3280,7 @@ async function armCaptureForTarget(cdp, state, targetId, {
   captureToken,
   mode = "idle",
   cancelled = false,
+  collapsed = null,
   reason = "manual",
 } = {}) {
   const sessionState = state.targetsById.get(targetId);
@@ -3182,7 +3293,7 @@ async function armCaptureForTarget(cdp, state, targetId, {
     sessionState,
     workflowId,
     captureToken,
-    { mode, cancelled },
+    { mode, cancelled, collapsed },
   );
   const meta = updateCaptureMetaForTarget(state, targetId, {
     workflowId,
@@ -3191,6 +3302,7 @@ async function armCaptureForTarget(cdp, state, targetId, {
     mode,
     cancelled,
     captureActive: mode === "inspecting",
+    collapsed,
   });
   logSignal("page_capture_armed", {
     workflowId,
@@ -3199,6 +3311,7 @@ async function armCaptureForTarget(cdp, state, targetId, {
     reason,
     mode,
     cancelled,
+    collapsed,
   });
   return meta;
 }
@@ -3207,6 +3320,8 @@ async function rearmCaptureForTargetIfActive(cdp, state, targetId, reason) {
   const meta = getActiveCaptureMetaForTarget(state, targetId);
   if (!meta) {
     const fallbackMeta = state.captureMetaByTargetId.get(targetId) || {};
+    const shouldCollapse = reason !== "same_document_navigation" &&
+      (fallbackMeta.mode === "idle" || fallbackMeta.mode === "idle_selected" || !fallbackMeta.mode);
     return applyToolbarStateForTarget(cdp, state, targetId, {
       workflowId: fallbackMeta.workflowId || null,
       captureToken: fallbackMeta.captureToken || null,
@@ -3214,6 +3329,7 @@ async function rearmCaptureForTargetIfActive(cdp, state, targetId, reason) {
       cancelled: !!fallbackMeta.cancelled,
       captureActive: !!fallbackMeta.captureActive,
       selectedDetails: fallbackMeta.selectedDetails || null,
+      collapsed: shouldCollapse ? true : (fallbackMeta.collapsed ?? null),
       reason,
     });
   }
@@ -3226,6 +3342,7 @@ async function rearmCaptureForTargetIfActive(cdp, state, targetId, reason) {
     captureToken: meta.captureToken,
     mode: meta.mode === "idle_selected" ? "idle_selected" : "idle",
     cancelled: !!meta.cancelled,
+    collapsed: meta.mode === "idle_selected" ? false : true,
     reason,
   }).finally(() => {
     state.rearmPendingByTargetId.delete(targetId);
