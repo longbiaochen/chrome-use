@@ -105,6 +105,10 @@ async function startFixtureServer() {
   };
 }
 
+async function openExtraTab(runtime, targetUrl) {
+  return runtime.cdp.send("Target.createTarget", { url: targetUrl });
+}
+
 function runShellScript(scriptPath, args = []) {
   return execFileSync(scriptPath, args, { encoding: "utf8" }).trim();
 }
@@ -285,16 +289,24 @@ async function waitFor(conditionFn, timeoutMs, label) {
 
 function selectTargetSession(runtime, urlFragment) {
   const normalizedFragment = urlFragment ? normalizeUrl(urlFragment) : "";
+  let matchedSession = null;
   for (const [targetId, info] of runtime.state.targetInfosByTargetId) {
     if (!info || !runtime.state.targetsById.has(targetId)) {
       continue;
     }
     const candidate = normalizeUrl(info.url || "");
     if (!normalizedFragment || candidate === normalizedFragment || candidate.startsWith(normalizedFragment)) {
-      return runtime.state.targetsById.get(targetId);
+      matchedSession = runtime.state.targetsById.get(targetId);
     }
   }
-  return runtime.state.targetsById.values().next().value || null;
+  return matchedSession || runtime.state.targetsById.values().next().value || null;
+}
+
+function selectTargetSessionById(runtime, targetId) {
+  if (!targetId) {
+    return null;
+  }
+  return runtime.state.targetsById.get(targetId) || null;
 }
 
 function assertToolbarMetrics(metrics, {
@@ -372,6 +384,15 @@ async function recordStep(runtime, sessionState, outputDir, name, expectations =
   };
 }
 
+async function waitForTargetUrl(runtime, sessionState, expectedPrefix, label) {
+  const normalized = normalizeUrl(expectedPrefix);
+  return waitFor(async () => {
+    const metrics = await readToolbarMetrics(runtime, sessionState);
+    const currentUrl = normalizeUrl(metrics?.url || "");
+    return currentUrl.startsWith(normalized) ? metrics : null;
+  }, 8000, label);
+}
+
 async function main() {
   const flags = parseArgs(process.argv.slice(2));
   const outputDir = flags["output-dir"]
@@ -381,6 +402,7 @@ async function main() {
 
   const fixtureServer = await startFixtureServer();
   const startupUrl = `${fixtureServer.origin}/index.html`;
+  const secondaryUrl = `${fixtureServer.origin}/next.html`;
   const openUrlScript = path.join(__dirname, "open_url.sh");
   const debugUrl = runShellScript(openUrlScript, [startupUrl]) || getDefaultDebugUrl();
 
@@ -391,21 +413,33 @@ async function main() {
   const results = [];
 
   try {
+    const extraTab = await openExtraTab(runtime, secondaryUrl);
     const begin = await handleInspectAction(runtime.cdp, runtime.state, { action: "begin_capture" }, 1);
     const workflowId = begin.workflowId;
     assertCondition(Boolean(workflowId), "Failed to start inspect capture.", begin);
 
     let sessionState = await waitFor(async () => selectTargetSession(runtime, startupUrl), 5000, "fixture target attachment");
+    const secondarySessionState = await waitFor(
+      async () => selectTargetSessionById(runtime, extraTab?.targetId),
+      5000,
+      "secondary target attachment",
+    );
     logStep("Validating initial inspecting state");
     results.push(await recordStep(runtime, sessionState, outputDir, "01-initial-inspecting", {
       expectedState: "inspecting",
       expectedText: "Inspect mode active",
       expectedButtonText: "Exit Inspector",
     }));
+    logStep("Validating secondary tab idle injection");
+    results.push(await recordStep(runtime, secondarySessionState, outputDir, "02-secondary-tab-idle", {
+      expectedState: "exited",
+      expectedText: "Inspect exited",
+      expectedButtonText: "Inspector",
+    }));
 
     logStep("Clicking Exit");
     await clickSelector(runtime, sessionState, '[data-chrome-inspect-toolbar] button[data-role="inspect"]');
-    results.push(await recordStep(runtime, sessionState, outputDir, "02-exited", {
+    results.push(await recordStep(runtime, sessionState, outputDir, "03-exited", {
       expectedState: "exited",
       expectedText: "Inspect exited",
       expectedButtonText: "Inspector",
@@ -413,7 +447,7 @@ async function main() {
 
     logStep("Reloading page while exited");
     await reloadTarget(runtime, sessionState);
-    results.push(await recordStep(runtime, sessionState, outputDir, "03-exited-after-reload", {
+    results.push(await recordStep(runtime, sessionState, outputDir, "04-exited-after-reload", {
       expectedState: "exited",
       expectedText: "Inspect exited",
       expectedButtonText: "Inspector",
@@ -421,7 +455,7 @@ async function main() {
 
     logStep("Re-entering inspect mode");
     await clickSelector(runtime, sessionState, '[data-chrome-inspect-toolbar] button[data-role="inspect"]');
-    results.push(await recordStep(runtime, sessionState, outputDir, "04-inspecting-again", {
+    results.push(await recordStep(runtime, sessionState, outputDir, "05-inspecting-again", {
       expectedState: "inspecting",
       expectedText: "Inspect mode active",
       expectedButtonText: "Exit Inspector",
@@ -429,7 +463,7 @@ async function main() {
 
     logStep("Triggering same-document navigation");
     await navigateHash(runtime, sessionState, "#details");
-    results.push(await recordStep(runtime, sessionState, outputDir, "05-same-document-inspecting", {
+    results.push(await recordStep(runtime, sessionState, outputDir, "06-same-document-inspecting", {
       expectedState: "inspecting",
       expectedText: "Inspect mode active",
       expectedButtonText: "Exit Inspector",
@@ -447,7 +481,7 @@ async function main() {
     assertCondition(Boolean(awaited?.selectionHistoryPath), "Expected selection history path in await payload.", awaited);
     const firstHistory = await readFile(awaited.selectionHistoryPath, "utf8");
     assertCondition(firstHistory.trim().length > 0, "Selection history file is empty after first capture.");
-    results.push(await recordStep(runtime, sessionState, outputDir, "06-selected", {
+    results.push(await recordStep(runtime, sessionState, outputDir, "07-selected", {
       expectedState: "idle_selected",
       expectedText: "Selected and saved",
       expectedButtonText: "Inspector",
@@ -456,8 +490,8 @@ async function main() {
 
     logStep("Navigating to the second fixture page");
     await clickSelector(runtime, sessionState, "#fixture-next-link");
-    sessionState = await waitFor(async () => selectTargetSession(runtime, `${fixtureServer.origin}/next.html`), 8000, "next page target");
-    results.push(await recordStep(runtime, sessionState, outputDir, "07-selected-after-navigation", {
+    await waitForTargetUrl(runtime, sessionState, `${fixtureServer.origin}/next.html`, "same-tab next page navigation");
+    results.push(await recordStep(runtime, sessionState, outputDir, "08-selected-after-navigation", {
       expectedState: "idle_selected",
       expectedText: "Selected and saved",
       expectedButtonText: "Inspector",
@@ -466,7 +500,7 @@ async function main() {
 
     logStep("Triggering same-document navigation on the second page");
     await clickSelector(runtime, sessionState, "#fixture-notes-link");
-    results.push(await recordStep(runtime, sessionState, outputDir, "08-selected-after-hash-nav", {
+    results.push(await recordStep(runtime, sessionState, outputDir, "09-selected-after-hash-nav", {
       expectedState: "idle_selected",
       expectedText: "Selected and saved",
       expectedButtonText: "Inspector",
@@ -475,7 +509,7 @@ async function main() {
 
     logStep("Re-entering inspect mode without a workflow");
     await clickSelector(runtime, sessionState, '[data-chrome-inspect-toolbar] button[data-role="inspect"]');
-    results.push(await recordStep(runtime, sessionState, outputDir, "09-manual-reenter-inspecting", {
+    results.push(await recordStep(runtime, sessionState, outputDir, "10-manual-reenter-inspecting", {
       expectedState: "inspecting",
       expectedText: "Inspect mode active",
       expectedButtonText: "Exit Inspector",
@@ -483,7 +517,7 @@ async function main() {
 
     logStep("Selecting a target without creating a workflow");
     await clickSelector(runtime, sessionState, ".panel");
-    results.push(await recordStep(runtime, sessionState, outputDir, "10-manual-reenter-selected", {
+    results.push(await recordStep(runtime, sessionState, outputDir, "11-manual-reenter-selected", {
       expectedState: "idle_selected",
       expectedText: "Selected and saved",
       expectedButtonText: "Inspector",
@@ -493,7 +527,7 @@ async function main() {
     logStep("Starting a new capture on the second page");
     const secondBegin = await handleInspectAction(runtime.cdp, runtime.state, { action: "begin_capture" }, 3);
     assertCondition(Boolean(secondBegin?.workflowId), "Expected second capture workflow.", secondBegin);
-    results.push(await recordStep(runtime, sessionState, outputDir, "11-second-capture-armed", {
+    results.push(await recordStep(runtime, sessionState, outputDir, "12-second-capture-armed", {
       expectedState: "inspecting",
       expectedText: "Inspect mode active",
       expectedButtonText: "Exit Inspector",
@@ -501,7 +535,7 @@ async function main() {
 
     logStep("Validating narrow viewport layout");
     await setViewport(runtime, sessionState, 360, 800);
-    results.push(await recordStep(runtime, sessionState, outputDir, "12-narrow-viewport", {
+    results.push(await recordStep(runtime, sessionState, outputDir, "13-narrow-viewport", {
       expectedState: "inspecting",
       expectedText: "Inspect mode active",
       expectedButtonText: "Exit Inspector",
@@ -520,7 +554,7 @@ async function main() {
     assertCondition(Boolean(secondAwaited?.selectionHistoryPath), "Expected selection history path in second await payload.", secondAwaited);
     const secondHistory = await readFile(secondAwaited.selectionHistoryPath, "utf8");
     assertCondition(secondHistory.trim().split("\n").length >= 2, "Selection history did not append a second record.");
-    results.push(await recordStep(runtime, sessionState, outputDir, "13-second-selected", {
+    results.push(await recordStep(runtime, sessionState, outputDir, "14-second-selected", {
       expectedState: "idle_selected",
       expectedText: "Selected and saved",
       expectedButtonText: "Inspector",
@@ -534,7 +568,7 @@ async function main() {
       instruction: "Visual validation complete.",
     }, 5);
     assertCondition(apply?.phase === "ready_to_apply", "Expected apply_instruction to complete.", apply);
-    results.push(await recordStep(runtime, sessionState, outputDir, "14-toolbar-after-apply", {
+    results.push(await recordStep(runtime, sessionState, outputDir, "15-toolbar-after-apply", {
       expectedState: "idle_selected",
       expectedText: "Selected and saved",
       expectedButtonText: "Inspector",

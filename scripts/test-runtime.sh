@@ -73,6 +73,18 @@ exit 0
 EOF
 chmod +x "$MOCK_BIN/open"
 
+cat >"$MOCK_BIN/nohup" <<'EOF'
+#!/usr/bin/env bash
+if [[ -n "${MOCK_NOHUP_LOG:-}" ]]; then
+  printf '%s\n' "$*" >>"$MOCK_NOHUP_LOG"
+fi
+if [[ "${MOCK_NOHUP_BEHAVIOR:-noop}" == "exec" ]]; then
+  exec "$@"
+fi
+exit 0
+EOF
+chmod +x "$MOCK_BIN/nohup"
+
 cat >"$MOCK_BIN/osascript" <<'EOF'
 #!/usr/bin/env bash
 cat >/dev/null
@@ -82,6 +94,16 @@ fi
 cat "${MOCK_WINDOW_COUNT_FILE:?}"
 EOF
 chmod +x "$MOCK_BIN/osascript"
+
+cat >"$MOCK_BIN/lsof" <<'EOF'
+#!/usr/bin/env bash
+if [[ -n "${MOCK_LSOF_OUTPUT_FILE:-}" && -s "${MOCK_LSOF_OUTPUT_FILE}" ]]; then
+  cat "${MOCK_LSOF_OUTPUT_FILE}"
+  exit 0
+fi
+exit "${MOCK_LSOF_STATUS:-1}"
+EOF
+chmod +x "$MOCK_BIN/lsof"
 
 cat >"$MOCK_BIN/curl" <<'EOF'
 #!/usr/bin/env bash
@@ -118,6 +140,14 @@ if [[ "$last_arg" == *"/json/list" ]]; then
     printf '[]\n'
   fi
   exit 0
+fi
+
+if [[ "$last_arg" == http://* || "$last_arg" == https://* ]]; then
+  if [[ -n "${MOCK_HTTP_REACHABLE_URL:-}" && "$last_arg" == "$MOCK_HTTP_REACHABLE_URL" ]]; then
+    printf '<html></html>\n'
+    exit 0
+  fi
+  exit 22
 fi
 
 exit 1
@@ -181,17 +211,23 @@ setup_case() {
   export MOCK_OPEN_LOG="$CASE_DIR/open.log"
   export MOCK_NEW_TAB_LOG="$CASE_DIR/new-tab.log"
   export MOCK_KILL_LOG="$CASE_DIR/kill.log"
+  export MOCK_NOHUP_LOG="$CASE_DIR/nohup.log"
   export MOCK_UNAME="Darwin"
   export MOCK_ENDPOINT_READY_AFTER="1"
   export MOCK_OPEN_PS_CONTENT=""
   export MOCK_WINDOW_COUNT_AFTER_OPEN="1"
   export MOCK_JSON_LIST_FILE="$CASE_DIR/json-list.json"
+  export MOCK_LSOF_OUTPUT_FILE="$CASE_DIR/lsof.txt"
+  export MOCK_LSOF_STATUS="1"
+  unset MOCK_HTTP_REACHABLE_URL
+  unset MOCK_NOHUP_BEHAVIOR
   unset MOCK_OSASCRIPT_FAIL
 
   : >"$MOCK_PS_FILE"
   printf '1' >"$MOCK_WINDOW_COUNT_FILE"
   printf '0' >"$MOCK_VERSION_COUNT_FILE"
   printf '[]\n' >"$MOCK_JSON_LIST_FILE"
+  : >"$MOCK_LSOF_OUTPUT_FILE"
 }
 
 run_ensure() {
@@ -216,6 +252,19 @@ run_doctor() {
   fi
   DOCTOR_STDOUT="$(cat "$output_file" 2>/dev/null || true)"
   DOCTOR_STDERR="$(cat "$error_file" 2>/dev/null || true)"
+}
+
+run_ensure_project_webapp() {
+  local target_url="$1"
+  local output_file="$CASE_DIR/ensure-project.out"
+  local error_file="$CASE_DIR/ensure-project.err"
+  if bash "$RUNTIME_ROOT/scripts/ensure_project_webapp_running.sh" "$target_url" >"$output_file" 2>"$error_file"; then
+    ENSURE_PROJECT_STATUS=0
+  else
+    ENSURE_PROJECT_STATUS=$?
+  fi
+  ENSURE_PROJECT_STDOUT="$(cat "$output_file" 2>/dev/null || true)"
+  ENSURE_PROJECT_STDERR="$(cat "$error_file" 2>/dev/null || true)"
 }
 
 test_launches_dedicated_instance() {
@@ -367,6 +416,51 @@ EOF
   assert_contains "Profile owner PID(s): 707" "$DOCTOR_STDOUT" "doctor helper process case reports browser root pid"
 }
 
+test_blocks_project_webapp_restart_on_port_conflict() {
+  setup_case
+  local project_root="$CASE_DIR/project"
+  mkdir -p "$project_root"
+  cat >"$project_root/Makefile" <<'EOF'
+serve:
+	python -m http.server 4321
+EOF
+  cat >"$MOCK_LSOF_OUTPUT_FILE" <<'EOF'
+COMMAND   PID USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+python3  4242 user    3u  IPv4 0x0000000000000000      0t0  TCP 127.0.0.1:4321 (LISTEN)
+EOF
+  export CHROME_INSPECT_AUTO_START_WEBAPP="1"
+  export CHROME_INSPECT_PROJECT_ROOT="$project_root"
+
+  run_ensure_project_webapp "http://127.0.0.1:4321/"
+
+  assert_eq "1" "$ENSURE_PROJECT_STATUS" "project webapp port conflict fails fast"
+  assert_contains "Port 4321 is already listening" "$ENSURE_PROJECT_STDERR" "project webapp port conflict explains listener blocker"
+  assert_contains "python3(pid=4242,127.0.0.1:4321)" "$ENSURE_PROJECT_STDERR" "project webapp port conflict reports listener summary"
+  assert_file_lines "$MOCK_NOHUP_LOG" "0" "project webapp port conflict does not launch a second server"
+}
+
+test_reuses_reachable_project_webapp_listener() {
+  setup_case
+  local project_root="$CASE_DIR/project"
+  mkdir -p "$project_root"
+  cat >"$project_root/Makefile" <<'EOF'
+serve:
+	python -m http.server 4321
+EOF
+  cat >"$MOCK_LSOF_OUTPUT_FILE" <<'EOF'
+COMMAND   PID USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+python3  5252 user    3u  IPv4 0x0000000000000000      0t0  TCP 127.0.0.1:4321 (LISTEN)
+EOF
+  export CHROME_INSPECT_AUTO_START_WEBAPP="1"
+  export CHROME_INSPECT_PROJECT_ROOT="$project_root"
+  export MOCK_HTTP_REACHABLE_URL="http://127.0.0.1:4321/"
+
+  run_ensure_project_webapp "http://127.0.0.1:4321/"
+
+  assert_eq "0" "$ENSURE_PROJECT_STATUS" "project webapp reachable listener is reused"
+  assert_file_lines "$MOCK_NOHUP_LOG" "0" "project webapp reachable listener does not relaunch server"
+}
+
 test_inspect_capture_wrapper_targets_shared_runtime() {
   setup_case
   local mock_node_dir="$CASE_DIR/mock-node"
@@ -420,6 +514,8 @@ test_inspect_runtime_source_tracks_navigation_rearm() {
   assert_contains "\"idle_selected\"" "$runtime_source" "inspect runtime exposes idle selected toolbar state"
   assert_contains "captureActive" "$runtime_source" "inspect runtime tracks active capture separate from toolbar state"
   assert_contains "applyToolbarStateToAllTargets" "$runtime_source" "inspect runtime keeps toolbar resident across workflow transitions"
+  assert_contains "reconcilePageTargets" "$runtime_source" "inspect runtime reconciles page targets beyond target-created events"
+  assert_contains "Target.getTargets" "$runtime_source" "inspect runtime refreshes target inventory through the target domain"
   assert_contains "\"Inspect mode active\"" "$runtime_source" "inspect runtime exposes compact inspecting label"
   assert_contains "\"Selected and saved\"" "$runtime_source" "inspect runtime exposes saved selection label"
   assert_contains "\"Inspect exited\"" "$runtime_source" "inspect runtime exposes compact exited label"
@@ -461,6 +557,8 @@ main() {
   test_doctor_reports_window_blocker
   test_allows_page_target_fallback_when_window_probe_reports_zero
   test_ignores_renderer_helpers_for_process_ownership
+  test_blocks_project_webapp_restart_on_port_conflict
+  test_reuses_reachable_project_webapp_listener
   test_inspect_capture_wrapper_targets_shared_runtime
   test_auth_cdp_wrapper_targets_shared_runtime
   test_inspect_runtime_source_tracks_navigation_rearm

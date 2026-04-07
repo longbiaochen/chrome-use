@@ -24,9 +24,17 @@ export CHROME_USE_PROFILE_DIR="$HOME/.chrome-use/agent-profile"
 export CHROME_USE_DEBUG_PORT="9223"
 ```
 
-Both installed skills resolve startup URL with:
+`chrome-auth` resolves startup URL with:
 
 - explicit user URL
+- `CHROME_USE_DEFAULT_WEBAPP_URL`
+- `about:blank`
+
+`chrome-inspect` resolves startup URL with:
+
+- explicit user URL
+- `CHROME_INSPECT_PROJECT_ROOT` docs webapp entry
+- inferred current-repo docs webapp entry when inspect auto-start is enabled and the working directory or git root looks like a local project
 - `CHROME_USE_DEFAULT_WEBAPP_URL`
 - `about:blank`
 

@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_URL="${1:-}"
-PROJECT_ROOT="${CHROME_INSPECT_PROJECT_ROOT:-}"
+PROJECT_ROOT="$("$SCRIPT_DIR/resolve_project_root.sh" 2>/dev/null || true)"
 STATE_DIR="${CHROME_USE_STATE_DIR:-$HOME/.chrome-use/state}"
 
 if [[ "${CHROME_INSPECT_AUTO_START_WEBAPP:-0}" != "1" ]]; then
@@ -40,6 +40,17 @@ host_port_from_url() {
   else
     echo "$url:80"
   fi
+}
+
+list_port_listeners() {
+  local port="$1"
+  if ! command -v lsof >/dev/null 2>&1; then
+    return 0
+  fi
+
+  lsof -iTCP:"$port" -sTCP:LISTEN -P -n 2>/dev/null | awk 'NR > 1 {
+    printf "%s(pid=%s,%s)\n", $1, $2, $9;
+  }'
 }
 
 entry_url="$($SCRIPT_DIR/project_webapp_entry.sh "$PROJECT_ROOT")"
@@ -85,7 +96,20 @@ listen_port="${host_port##*:}"
 
 if command -v lsof >/dev/null 2>&1; then
   if lsof -iTCP:"$listen_port" -sTCP:LISTEN -P -n >/dev/null 2>&1; then
-    exit 0
+    for attempt in $(seq 1 5); do
+      if is_http_reachable "$TARGET_URL"; then
+        exit 0
+      fi
+      sleep 1
+    done
+
+    listener_summary="$(list_port_listeners "$listen_port" | paste -sd '; ' -)"
+    cat >&2 <<EOF
+Port ${listen_port} is already listening, but ${TARGET_URL} is still not reachable.
+chrome-use did not start another local web server because the existing listener would conflict with the expected project preview.
+${listener_summary:+Listeners: ${listener_summary}}
+EOF
+    exit 1
   fi
 else
   if is_http_reachable "$TARGET_URL"; then

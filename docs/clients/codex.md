@@ -24,8 +24,11 @@ Both public skills are also allowed to trigger implicitly when the user's reques
 
 - explicit user URL
 - `CHROME_INSPECT_PROJECT_ROOT` docs webapp entry
+- inferred current-repo docs webapp entry when inspect auto-start is enabled and the working directory or git root looks like a local project
 - `CHROME_USE_DEFAULT_WEBAPP_URL`
 - `about:blank`
+
+For local-project inspect work, omitting the URL should not skip repo lookup. The shared runtime now infers the project root from the current working directory or git root before falling back to `about:blank`.
 
 If you want Codex to use the same dedicated profile path as an existing local setup:
 
@@ -47,8 +50,9 @@ Recommended verification for public skills:
 1. Reinstall/update skills:
    `bash install/install-codex-skill.sh`
 2. Send `/chrome-inspect` in chat.
-3. Chrome session is opened through `scripts/open_url.sh` with the resolved startup URL, and the local project web app is auto-started first when `CHROME_INSPECT_PROJECT_ROOT` is configured.
+3. Chrome session is opened through `scripts/open_url.sh` with the resolved startup URL, and the local project web app is auto-started first when `CHROME_INSPECT_PROJECT_ROOT` is configured or the current repo can be inferred as the local project.
    Reuse keeps the dedicated `agent-profile` on a single Chrome window and opens a new tab on that running instance.
+   If the expected preview port is already listening but the target URL is still unreachable, the runtime should stop immediately with a listener-blocker error instead of starting another server.
 4. The runtime should prioritize the freshly opened target instead of attaching unrelated tabs.
 5. The client calls `scripts/inspect-capture begin --project-root "<repo>"` and stores `workflowId`.
 6. In Chrome, use the persistent page toolbar to stay in `Inspect` mode or `Exit`, then click the target element only after inspect mode is armed.

@@ -25,10 +25,17 @@
   - state dir: `~/.chrome-use/state`
   - debug endpoint: `http://127.0.0.1:9223`
 - Keep the dedicated profile runtime contract strict: one profile-owner process on `127.0.0.1:9223`, and one dedicated profile window on macOS.
-- For `/chrome-inspect`, resolve startup URL in this order: explicit user URL → `CHROME_INSPECT_PROJECT_ROOT` docs webapp entry → `CHROME_USE_DEFAULT_WEBAPP_URL` → `about:blank`.
+- For `/chrome-inspect`, resolve startup URL in this order: explicit user URL → `CHROME_INSPECT_PROJECT_ROOT` docs webapp entry → inferred current-repo docs webapp entry when inspect auto-start is enabled → `CHROME_USE_DEFAULT_WEBAPP_URL` → `about:blank`.
 - If `CHROME_INSPECT_AUTO_START_WEBAPP=1` and `CHROME_INSPECT_PROJECT_ROOT` are set, `runtime/chrome-use/scripts/open_url.sh` should auto-start the local project web app before attaching Chrome.
+- If inspect auto-start is enabled and `CHROME_INSPECT_PROJECT_ROOT` is unset, the shared runtime should infer the local project root from the current working directory or git root before falling back.
+- When the expected local preview port is already listening but the target URL is unreachable, fail fast with the listener details instead of trying to start a second web server.
+- `/chrome-inspect` toolbar contract: default to active inspect mode (`Exit Inspector` shown), auto-exit to `Inspector` after a successful selection, and keep the toolbar resident across same-tab navigation/reload/hash navigation.
+- In exited or saved-selection state, a single `Inspector` click should immediately re-enter inspect mode even before starting a new capture workflow.
+- Persist selection trail in `events/selection-history.jsonl` in addition to `events/current-selection.json`.
+- Preferred client flow is `scripts/inspect-capture begin ...` followed by `scripts/inspect-capture await ...` in the same turn; use immediate-return fallback only when long-running tool waits are not viable.
 - On macOS, open or reuse the dedicated Chrome profile in the background so MCP startup does not steal user focus.
 - Use repository checks when touching runtime/packaging behavior: `bash scripts/verify-manifest.sh` and `bash scripts/test-runtime.sh`.
+- For inspect-toolbar behavior changes, also run `node runtime/chrome-use/scripts/inspect_visual_loop.mjs`.
 - Complete the full requested task before returning whenever feasible; do not stop after a partial implementation if a known issue remains reproducible.
 - When a validation step still exposes a concrete bug or flaky runtime path that is in scope for the current task, continue debugging and fix it before responding.
 - Do not claim Windows support unless it has been tested end-to-end.

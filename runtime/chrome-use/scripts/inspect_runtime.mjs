@@ -18,6 +18,7 @@ const DEFAULT_WAIT_MS = 5000;
 const DEFAULT_TIMEOUT_MS = 10000;
 const DEFAULT_MIN_WAIT_MS = 500;
 const DEFAULT_POLL_MS = 250;
+const TARGET_RECONCILE_MS = 1000;
 const DEFAULT_TRUNCATE = 400;
 const CDP_METHOD_NOT_FOUND_CODE = -32601;
 const BRIDGE_OWNER_VERSION = 1;
@@ -1654,17 +1655,29 @@ export async function reflectSelectionOnPage(cdp, sessionState, workflowId, payl
 
 async function armPageSelectionCapture(cdp, state, workflow) {
   const workflowId = workflow.workflowId;
+  state.inspectTargetId = selectInspectTargetId(state);
   const targetIds = [...state.targetsById.keys()];
   let armedAt = null;
   for (const targetId of targetIds) {
     try {
-      const meta = await armCaptureForTarget(cdp, state, targetId, {
-        workflowId,
-        captureToken: workflow.captureToken,
-        mode: "inspecting",
-        cancelled: false,
-        reason: "workflow_begin",
-      });
+      const isInspectTarget = targetId === state.inspectTargetId;
+      const meta = isInspectTarget
+        ? await armCaptureForTarget(cdp, state, targetId, {
+            workflowId,
+            captureToken: workflow.captureToken,
+            mode: "inspecting",
+            cancelled: false,
+            reason: "workflow_begin",
+          })
+        : await applyToolbarStateForTarget(cdp, state, targetId, {
+            workflowId: null,
+            captureToken: null,
+            mode: "exited",
+            cancelled: false,
+            captureActive: false,
+            selectedSummary: "",
+            reason: "workflow_begin_idle",
+          });
       armedAt = meta?.armedAt || armedAt;
     } catch (err) {
       state.lastObservedError = `page capture arm failed for ${targetId}: ${err?.message || err}`;
@@ -2300,6 +2313,7 @@ export async function handleInspectAction(cdp, state, args, messageId) {
   const timeoutMs = clampInt(args.timeoutMs, 0, 60000, action === "capture" ? 0 : DEFAULT_TIMEOUT_MS);
 
   if (action === "begin_capture") {
+    await reconcilePageTargets(cdp, state);
     const workflow = await createCaptureWorkflow(state);
     const armStartedAt = timingNow();
     const armedAt = await armPageSelectionCapture(cdp, state, workflow);
@@ -2342,6 +2356,7 @@ export async function handleInspectAction(cdp, state, args, messageId) {
   }
 
   if (action === "capture") {
+    await reconcilePageTargets(cdp, state);
     const workflow = await createCaptureWorkflow(state);
     const armedAt = await armPageSelectionCapture(cdp, state, workflow);
     await persistWorkflowState(state.store, state, workflow.workflowId, {
@@ -2684,7 +2699,7 @@ async function attachPageTarget(cdp, targetInfo, state) {
     }
   });
 
-  if (state.activeWorkflowId) {
+  if (state.activeWorkflowId && targetInfo.targetId === state.inspectTargetId) {
     try {
       const workflow = await readWorkflow(state.store, state.activeWorkflowId);
       if (workflow?.captureToken) {
@@ -2758,9 +2773,25 @@ async function loadTargetsFromDebugList(debugUrl, state) {
   }));
 }
 
+function mergeTargetInfoLists(...lists) {
+  const merged = new Map();
+  for (const list of lists) {
+    for (const info of list || []) {
+      if (!info?.targetId || info.type !== "page") {
+        continue;
+      }
+      merged.set(info.targetId, info);
+    }
+  }
+  return [...merged.values()];
+}
+
 function updateTargetInfo(state, info) {
   if (!info?.targetId) {
     return;
+  }
+  if (state.targetInfosByTargetId.has(info.targetId)) {
+    state.targetInfosByTargetId.delete(info.targetId);
   }
   state.targetInfosByTargetId.set(info.targetId, {
     targetId: info.targetId,
@@ -2768,6 +2799,14 @@ function updateTargetInfo(state, info) {
     url: info.url || null,
     type: info.type || null,
   });
+}
+
+function selectInspectTargetId(state) {
+  if (state.preferredTargetId && state.targetsById.has(state.preferredTargetId)) {
+    return state.preferredTargetId;
+  }
+  const targetIds = [...state.targetInfosByTargetId.keys()].filter((targetId) => state.targetsById.has(targetId));
+  return targetIds[targetIds.length - 1] || [...state.targetsById.keys()][0] || null;
 }
 
 function updateCaptureMetaForTarget(state, targetId, patch) {
@@ -2953,6 +2992,12 @@ function detachTrackedTarget(state, targetId, rootCdp) {
   state.pageCaptureScriptByTargetId.delete(targetId);
   state.attachingTargetIds.delete(targetId);
   state.rearmPendingByTargetId.delete(targetId);
+  if (state.inspectTargetId === targetId) {
+    state.inspectTargetId = null;
+  }
+  if (state.preferredTargetId === targetId) {
+    state.preferredTargetId = null;
+  }
   if (sessionState?.sessionId) {
     state.targetsBySessionId.delete(sessionState.sessionId);
   }
@@ -2974,6 +3019,39 @@ async function attachTargetIfNeeded(cdp, state, info) {
   } finally {
     state.attachingTargetIds.delete(info.targetId);
   }
+}
+
+async function reconcilePageTargets(cdp, state) {
+  if (!state?.debugUrl) {
+    return [];
+  }
+  if (state.reconcileTargetsPending) {
+    return state.reconcileTargetsPending;
+  }
+  state.reconcileTargetsPending = (async () => {
+    let targetDomainInfos = [];
+    if (state.targetDomainAvailable) {
+      const result = await safeSend(cdp, "Target.getTargets");
+      if (result.ok) {
+        targetDomainInfos = result.result?.targetInfos || [];
+      }
+    }
+    let debugListInfos = [];
+    try {
+      debugListInfos = await loadTargetsFromDebugList(state.debugUrl, state);
+    } catch {
+      debugListInfos = [];
+    }
+    const targetInfos = mergeTargetInfoLists(targetDomainInfos, debugListInfos);
+    await Promise.all(targetInfos.map(async (info) => {
+      updateTargetInfo(state, info);
+      await attachTargetIfNeeded(cdp, state, info);
+    }));
+    return targetInfos;
+  })().finally(() => {
+    state.reconcileTargetsPending = null;
+  });
+  return state.reconcileTargetsPending;
 }
 
 async function markActiveWorkflowDisconnected(state, message) {
@@ -3001,6 +3079,10 @@ async function markActiveWorkflowDisconnected(state, message) {
 }
 
 async function closeAttachedSessions(cdp, state) {
+  if (state?.targetRefreshTimer) {
+    clearInterval(state.targetRefreshTimer);
+    state.targetRefreshTimer = null;
+  }
   if (cdp && !cdp.isClosed()) {
     cdp.close();
   }
@@ -3041,6 +3123,8 @@ export async function connectInspectRuntime({
     captureMetaByTargetId: new Map(),
     pageCaptureScriptByTargetId: new Map(),
     rearmPendingByTargetId: new Map(),
+    preferredTargetId: null,
+    inspectTargetId: null,
     store: createInspectStore({
       debugHost: browserUrl.hostname,
       debugPort: browserUrl.port || "80",
@@ -3053,6 +3137,9 @@ export async function connectInspectRuntime({
     },
     bridgeOwner: null,
     shuttingDown: null,
+    debugUrl,
+    reconcileTargetsPending: null,
+    targetRefreshTimer: null,
   };
 
   try {
@@ -3095,10 +3182,11 @@ export async function connectInspectRuntime({
     if (!targetInfos.length) {
       targetInfos = await loadTargetsFromDebugList(debugUrl, state);
     }
-    targetInfos = await selectTargetInfosForStartupUrl(state.store, targetInfos, startupUrl);
     if (!targetInfos.length) {
       throw new Error("No page target is available. Open a page in Chrome first and retry.");
     }
+    const preferredTargetInfos = await selectTargetInfosForStartupUrl(state.store, targetInfos, startupUrl);
+    state.preferredTargetId = preferredTargetInfos?.[0]?.targetId || null;
 
     await Promise.all(targetInfos.map(async (info) => {
       if (info.type !== "page") {
@@ -3106,6 +3194,7 @@ export async function connectInspectRuntime({
       }
       await attachTargetIfNeeded(cdp, state, info);
     }));
+    await reconcilePageTargets(cdp, state);
 
     if (!state.targetsById.size) {
       throw new Error(`Failed to attach any page target for inspection. Last error: ${state.lastObservedError || "unknown"}`);
@@ -3116,6 +3205,9 @@ export async function connectInspectRuntime({
       status: state.activeWorkflowId ? restoredWorkflow?.status || "waiting_for_selection" : "bridge_ready",
     });
     state.runtimeMetrics.runtimeAttachedAt = timingNow();
+    state.targetRefreshTimer = setInterval(() => {
+      void reconcilePageTargets(cdp, state);
+    }, TARGET_RECONCILE_MS);
     logTiming("runtime_attach_completed", attachStartedAt, {
       debugUrl,
       targets: state.targetsById.size,

@@ -14,7 +14,7 @@ Only two public skill names are surfaced by design:
 
 - `/chrome-inspect` captures selected DOM context in a dedicated profile and returns a mutation-ready inspect workflow.
 - `/chrome-auth` handles operator-driven login/authorization flows while keeping session state on the dedicated profile.
-- For `/chrome-inspect`, the launcher can auto-start a detected local project web app before opening Chrome when `CHROME_INSPECT_PROJECT_ROOT` is set.
+- For `/chrome-inspect`, the launcher can auto-start a detected local project web app before opening Chrome when `CHROME_INSPECT_PROJECT_ROOT` is set or when the current working directory or git root can be inferred as the local project.
 - Both public skills may be invoked explicitly or implicitly.
 
 On macOS, the launcher keeps Chrome in the background when opening or reusing the dedicated profile so agent activity does not pull the window frontmost. The dedicated `agent-profile` must remain a single-window Chrome instance; other Chrome windows under other profiles are allowed.
@@ -123,8 +123,10 @@ export CHROME_USE_DEBUG_PORT="9223"
 
 `CHROME_USE_DEFAULT_WEBAPP_URL` is used as optional URL fallback before `about:blank`.
 For `/chrome-inspect`, set `CHROME_INSPECT_PROJECT_ROOT` (for example `/Users/longbiao/Projects/home-page`) to let the helper auto-resolve the project's docs web app entry.
+If inspect auto-start is enabled and that env var is missing, the shared runtime now infers the project root from the current working directory or git root before using `about:blank`.
 When `CHROME_INSPECT_AUTO_START_WEBAPP=1` is set, `open_url.sh` will also try to start that local web app before attaching Chrome.
 That autostart path only applies when the resolved target is a matching local `localhost` or `127.0.0.1` URL for the detected project entry.
+If the expected preview port is already listening but the target URL is still unreachable, `open_url.sh` now stops immediately with the blocking listener details instead of starting a second server.
 
 For a Codex setup that already standardizes on a custom dedicated profile path:
 
@@ -138,14 +140,14 @@ Install examples in this repo install only the two public skills above and do no
 For `/chrome-inspect` default flow, send:
 
 1. Run `/chrome-inspect` in chat.
-2. Let `scripts/open_url.sh` open Chrome and auto-start the local project web app first when `CHROME_INSPECT_PROJECT_ROOT` is configured.
+2. Let `scripts/open_url.sh` open Chrome and auto-start the local project web app first when `CHROME_INSPECT_PROJECT_ROOT` is configured or the current repo can be inferred as the local project.
    If the dedicated profile is already running, the command reuses it by opening a new tab there instead of creating another dedicated window.
 3. Start capture with `scripts/inspect-capture begin --project-root "<repo>"` and store the returned `workflowId`.
 4. Confirm inspect mode is armed, then click the target element in Chrome.
    The page toolbar should already be in active inspect mode on entry, with the primary action labeled `Exit Inspector`.
    After a successful click, inspect mode should auto-exit, the primary action should flip back to `Inspector`, and the toolbar should remain visible.
    The toolbar should also show a short saved-selection card under the main controls so the operator can see what was selected and know it has been persisted.
-   The page should immediately become navigable again, and the toolbar should continue to appear across same-tab navigation, reloads, and same-document navigation.
+   The page should immediately become navigable again, and the toolbar should continue to appear across same-tab navigation, reloads, same-document navigation, and other tabs in the same dedicated profile.
    Clicking `Inspector` after exit should immediately re-enter inspect mode, even before a new capture workflow is created.
 5. Call `scripts/inspect-capture await --workflow-id "<workflowId>"`.
 6. Treat the result as valid only if it belongs to the current `workflowId` and follows a fresh click for this capture cycle.
@@ -164,6 +166,7 @@ For `/chrome-inspect` default flow, send:
 The inspect toolbar is a persistent browser-level affordance, while capture is a one-shot workflow layered on top of it.
 
 - On first entry to a new capture, the toolbar should already be active. The primary button reads `Exit Inspector`.
+- Every page tab in the dedicated profile should receive the toolbar. Inspect-originated tabs start active; other tabs stay injected in the idle `Inspector` state until a capture or manual re-entry activates inspect mode there.
 - If the operator clicks `Exit Inspector`, inspect mode stops immediately and the primary button changes back to `Inspector`.
 - If the operator selects an element, inspect mode also stops immediately and the toolbar moves to a saved-selection state.
 - In the saved-selection state, the toolbar should show a short summary card under the controls with “Selected and saved. Return to the agent.” plus a compact element summary.
@@ -203,7 +206,7 @@ To run the local closed-loop visual validation for the compact inspect toolbar, 
 node runtime/chrome-use/scripts/inspect_visual_loop.mjs
 ```
 
-The script opens the dedicated browser against a deterministic local fixture, verifies the `Exit Inspector` / `Inspector` toggle contract, checks that selection auto-exits inspect mode, validates the saved-selection summary card, confirms manual re-entry without a fresh workflow, verifies JSONL history appends across selections, confirms navigation keeps the toolbar injected, re-arms a second capture on the destination page, and writes screenshots to a temp output directory.
+The script opens the dedicated browser against a deterministic local fixture, verifies the `Exit Inspector` / `Inspector` toggle contract, checks that a secondary tab receives idle toolbar injection, checks that selection auto-exits inspect mode, validates the saved-selection summary card, confirms manual re-entry without a fresh workflow, verifies JSONL history appends across selections, confirms navigation keeps the toolbar injected, re-arms a second capture on the destination page, and writes screenshots to a temp output directory.
 
 ## Platform support
 

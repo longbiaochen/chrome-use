@@ -7,19 +7,22 @@ interface:
     1. Resolve startup URL in this order:
        - explicit user URL (if provided)
        - detected docs webapp entry URL from `CHROME_INSPECT_PROJECT_ROOT`
+       - detected docs webapp entry URL from the current repo when inspect auto-start is enabled and the working directory or git root looks like a local project
        - `CHROME_USE_DEFAULT_WEBAPP_URL`
        - `about:blank`
+       Never skip the repo lookup just because the user omitted a URL. If the request is about the current local project, treat the repo as the source of truth and let the shared runtime infer the preview URL before falling back to `about:blank`.
     2. Open Chrome in the resolved URL with:
        `bash scripts/open_url.sh "<resolved_url>"`
        so the dedicated profile/debug endpoint is ready, the dedicated profile remains a single-window instance, and the local docs webapp is auto-started when
-       `CHROME_INSPECT_PROJECT_ROOT` points to a local project (for example
-       `/Users/longbiao/Projects/home-page`).
+       `CHROME_INSPECT_PROJECT_ROOT` points to a local project or the current repo can be inferred as a local project (for example
+       `/Users/longbiao/Projects/home-page`). If the expected preview port is already occupied but the URL is not reachable, treat that as a blocker instead of trying to start a second server.
     3. Start direct capture with `scripts/inspect-capture begin --project-root "<repo>"` and store the returned `workflowId`.
     4. Wait for the operator to select an element in Chrome only after inspect mode is armed, and call
        `scripts/inspect-capture await --workflow-id "<workflowId>"`.
        On entry, the page toolbar should already be in active inspect mode and the primary action should read `Exit Inspector`.
        After a successful click, inspect mode should auto-exit while the toolbar stays visible, the primary action should change back to `Inspector`, and the page should immediately become navigable again.
        The saved-selection state should also show a short summary card under the toolbar so the operator can see what was selected and know it has been saved.
+       Every page tab in the same dedicated profile should also keep the toolbar injected; tabs not created for the active inspect workflow should remain in the idle `Inspector` state until they are explicitly re-armed.
        If the operator clicks `Inspector` after exit, inspect mode should re-enter immediately even before a new workflow is created.
        Treat the selection as valid only if it clearly belongs to the current `workflowId` and follows a fresh operator click.
        If `await_selection` appears to return immediately with stale prior context, or the durable files only show older

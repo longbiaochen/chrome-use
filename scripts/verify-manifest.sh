@@ -72,6 +72,7 @@ check_startup_url_resolution() {
   local resolved_explicit
   local resolved_project
   local resolved_project_with_env
+  local resolved_inferred_from_cwd
 
   resolved_default="$($RUNTIME_ROOT/scripts/resolve_startup_url.sh)"
   assert_eq "$expected_default" "$resolved_default" "Startup URL default fallback"
@@ -102,9 +103,20 @@ EOF
   if [[ -n "$expected_project_entry" ]]; then
     assert_eq "$expected_project_entry" "$resolved_project_with_env" "Project root entry overrides env fallback"
   fi
+
+  resolved_inferred_from_cwd="$(cd "$project_root" && CHROME_INSPECT_AUTO_START_WEBAPP=1 "$RUNTIME_ROOT/scripts/resolve_startup_url.sh")"
+  if [[ -n "$expected_project_entry" ]]; then
+    assert_eq "$expected_project_entry" "$resolved_inferred_from_cwd" "Inspect startup infers project root from cwd"
+  fi
 }
 
 check_wrapper_targets() {
+  if [[ -x "$RUNTIME_ROOT/scripts/resolve_project_root.sh" ]]; then
+    log_ok "resolve_project_root helper is executable"
+  else
+    log_fail "resolve_project_root helper must be executable"
+  fi
+
   if rg -Fq 'exec "$SCRIPT_DIR/../../../runtime/chrome-use/scripts/open_url.sh" "$@"' "$SKILLS_ROOT/chrome-inspect/scripts/open_url.sh"; then
     log_ok "chrome-inspect open_url wrapper target"
   else

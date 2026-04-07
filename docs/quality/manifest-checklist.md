@@ -17,10 +17,12 @@ bash scripts/verify-manifest.sh
 - startup URL resolution follows:
   - explicit user URL
   - project docs webapp entry from `CHROME_INSPECT_PROJECT_ROOT`
+  - inferred project docs webapp entry from the current working directory or git root when inspect auto-start is enabled
   - `CHROME_USE_DEFAULT_WEBAPP_URL`
   - `about:blank`
 - `chrome-inspect` and `chrome-auth` wrapper scripts resolve into the shared `runtime/chrome-use/scripts/` helpers
 - `open_url.sh` returns the debug URL on stdout after ensuring the local project web app is running when auto-start is enabled
+- when the expected preview port is already listening but the target URL is not reachable, startup fails fast with the listener details instead of launching a second server
 
 3. Confirm packaging docs list only the public skills:
 

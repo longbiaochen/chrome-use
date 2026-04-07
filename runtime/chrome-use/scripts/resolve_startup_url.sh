@@ -2,8 +2,8 @@
 set -euo pipefail
 
 explicit_url="${1:-}"
-project_root="${CHROME_INSPECT_PROJECT_ROOT:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+project_root="$("$SCRIPT_DIR/resolve_project_root.sh" 2>/dev/null || true)"
 
 PROJECT_ENTRY=""
 
