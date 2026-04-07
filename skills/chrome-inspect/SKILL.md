@@ -1,11 +1,11 @@
 ---
 name: "chrome-inspect"
-description: "Capture selected DOM elements in a dedicated Chrome profile and prepare mutation-ready inspection context."
+description: "Capture a live page selection in a dedicated Chrome profile and stream durable structured context back to the agent."
 ---
 
 # Chrome Inspect Skill
 
-Use this skill when an agent needs deterministic, inspect-first Chrome DOM work in a dedicated profile. It is designed to trigger both explicitly and implicitly for browser QA, DOM inspection, selected-element capture, and mutation-ready page context.
+Use this skill when an agent needs deterministic, inspect-first Chrome DOM work in a dedicated profile. It is designed for the moment when a user can point at the page faster than they can explain it in chat. Instead of asking for pasted URLs or screenshots, `chrome-inspect` waits for the real click, captures the exact target, and returns durable structured context that the agent can act on immediately.
 
 ## Workflow
 
@@ -37,6 +37,7 @@ Use this skill when an agent needs deterministic, inspect-first Chrome DOM work 
 9. Treat the selection as valid only if it is clearly for the current `workflowId` and follows a fresh operator click for this capture cycle.
    If `await_selection` appears to return immediately with stale prior context, or the durable files only show an older `updatedAt` / `payload.observedAt`, do not present it as the new selection. Restart capture or create a fresh workflow and retry.
 10. Do not return a final response, a completion summary, or a "Worked for ..." timeout-style message before receiving a fresh `phase=awaiting_user_instruction` or equivalent fresh `selection_received` payload for the current capture cycle.
+    The point of this workflow is that the agent should keep waiting for the user's click, so the operator does not need to come back and restate what they meant.
 11. If a fresh selection is present, report the selected element with enough detail for the operator to identify and modify it without another lookup.
    Include at least:
    - `summary`
@@ -105,6 +106,7 @@ scripts/inspect_select_element.sh "/path/to/repo"
 Expected result:
 - JSON on stdout with `workflowId`, `observedAt`, `summary`, `page`, `selectedElement`, and `position`
 - JSON on stdout should also expose `selectionHistoryPath` so the caller can inspect or recover the JSONL trail
+- the returned payload should make the user's intent obvious without any extra pasted link, screenshot, or explanation
 - no manual bridge handshake
 - no repo-wide discovery step when `project_webapp_entry.sh` already resolves the preview URL
 - successful selection automatically exits inspect mode while keeping the toolbar visible

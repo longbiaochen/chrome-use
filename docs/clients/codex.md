@@ -1,5 +1,7 @@
 # Codex adapter notes
 
+For Codex, `chrome-use` is most useful when the user can point at the page faster than they can describe it. `chrome-inspect` keeps the tool call open, waits for the real click, and returns structured `page` / `element` / `content` context, while `chrome-auth` keeps the same login state alive in the dedicated profile.
+
 Codex supports the generic skill payload plus optional metadata in installed skill folders:
 
 - `chrome-inspect`
@@ -55,7 +57,7 @@ Recommended verification for public skills:
    If the expected preview port is already listening but the target URL is still unreachable, the runtime should stop immediately with a listener-blocker error instead of starting another server.
 4. The runtime should prioritize the freshly opened target instead of attaching unrelated tabs.
 5. The client calls `scripts/inspect-capture begin --project-root "<repo>"` and stores `workflowId`.
-6. In Chrome, use the persistent page toolbar to stay in `Inspect` mode or `Exit`, then click the target element only after inspect mode is armed.
+6. In Chrome, use the persistent page toolbar to enter inspect mode, then click the target element only after inspect mode is armed.
 7. The client calls `scripts/inspect-capture await --workflow-id "<workflowId>"`.
 8. Treat the result as valid only if it belongs to the current `workflowId` and follows a fresh click for the current capture cycle.
    If `await_selection` appears to return immediately with stale prior context, restart capture instead of presenting it as the new selection.
@@ -63,6 +65,7 @@ Recommended verification for public skills:
    Do not reuse an earlier turn's cached `workflowId` to answer "latest".
    This should be handled as a local file read, not a fresh browser/runtime attach and not a new preview lookup.
 10. Confirm the agent does not conclude the turn before the tool returns `phase=awaiting_user_instruction`.
+    The user should not need to come back with a pasted URL, screenshot, or extra explanation after they already clicked the page.
 11. Confirm the agent reports enough selected-element detail after `phase=awaiting_user_instruction`:
    `summary`, `workflowId`, tag / `selectedElement.nodeName`, `selectedElement.selectorHint`,
    `selectedElement.id`, `selectedElement.className`, `selectedElement.ariaLabel`, page URL,

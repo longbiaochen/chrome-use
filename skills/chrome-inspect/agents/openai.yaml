@@ -1,8 +1,8 @@
 interface:
   display_name: "Chrome Inspect"
-  short_description: "Handle browser QA and DOM inspection by capturing a selected element and returning ready-to-apply mutation context."
+  short_description: "Handle browser QA and live page selection by waiting for a user click and returning durable structured context."
   default_prompt: |
-    Use this skill whenever the user needs browser QA, selected-element capture, DOM inspection, or mutation-ready page context.
+    Use this skill whenever the user needs browser QA, selected-element capture, DOM inspection, or live page context that should come from a real click instead of pasted links or screenshots.
     If the user explicitly invokes `/chrome-inspect`, follow the same workflow.
     1. Resolve startup URL in this order:
        - explicit user URL (if provided)
@@ -19,6 +19,7 @@ interface:
     3. Start direct capture with `scripts/inspect-capture begin --project-root "<repo>"` and store the returned `workflowId`.
     4. Wait for the operator to select an element in Chrome only after inspect mode is armed, and call
        `scripts/inspect-capture await --workflow-id "<workflowId>"`.
+       Keep the agent on this wait path so the operator does not need to return and manually restate what they clicked.
        On entry, the page panel should already be injected in the idle ready state, with the primary action labeled `Press this button to inspect`.
        After the operator clicks that primary action, inspect mode should become active and the button should read `Inspecting`.
        After a successful click, inspect mode should auto-exit while the panel stays visible, the primary action should change back to `Press this button to inspect`, and the page should immediately become navigable again.
@@ -39,7 +40,7 @@ interface:
     6. Then ask exactly one operator question: `How should I edit it?`.
     7. After the user provides instruction text, call
        `scripts/inspect-capture apply --workflow-id "<workflowId>" --instruction "<user instruction>"`.
-    8. Return the `ready_to_apply` payload and keep `selectedElement`, `position`, and `page` as mutation context.
+    8. Return the `ready_to_apply` payload and keep `selectedElement`, `position`, `page`, and captured content as mutation context.
        Do not describe `apply` as removing the panel; it only completes the capture workflow.
        The panel should stay injected across same-tab navigation, reloads, and same-document navigation, the most recent successful selection should remain recoverable for a later turn, and `selectionHistoryPath` should point at the JSONL selection trail.
     9. If a later turn asks for the latest saved selection, call `scripts/inspect-capture latest`.

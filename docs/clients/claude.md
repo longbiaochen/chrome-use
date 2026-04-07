@@ -1,5 +1,7 @@
 # Claude-compatible install notes
 
+The same product positioning applies here: `chrome-inspect` is the inspect-first workflow for live page selection handoff, and `chrome-auth` keeps the dedicated session stable so users do not have to keep redoing login or re-explaining page context.
+
 The neutral path is still the recommended one:
 
 ```bash

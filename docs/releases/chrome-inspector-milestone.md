@@ -1,11 +1,12 @@
 # `chrome-inspect` milestone
 
-chrome-use now ships a full inspect-first workflow for coding agents.
+chrome-use now ships a full inspect-first workflow for coding agents, built to turn user clicks into structured agent context in real time.
 
 ## What shipped
 
 - `chrome-inspect` now supports a persistent in-page inspect panel in the dedicated agent profile
 - the first real page click completes the active inspect workflow immediately
+- the selected page area is written back as structured `page`, `element`, and `content` context instead of requiring pasted links or screenshots
 - `inspect-capture await` now uses one long-lived daemon wait instead of layered reconnect/search fallback during the normal path
 - the saved-selection panel now shows `Selected`, `Content`, `Page`, and `Element`
 - `inspect-capture latest` can recover the most recent persisted selection without reopening Chrome
@@ -31,6 +32,8 @@ That gives chrome-use a tighter local loop for coding agents working on real app
 - less profile confusion
 - less fallback search after the user already clicked
 - faster handoff from human selection to mutation-ready DOM context
+- no need to restate page context in chat after the operator has already pointed at the right place
+- durable persisted selections that make the workflow easier to trust and recover
 
 ## Technical highlights
 

@@ -1,5 +1,7 @@
 # Generic `.agents/skills` install
 
+`chrome-use` gives generic skill-compatible agents a fast browser handoff path: the user clicks the live page once, the agent keeps waiting, and the returned payload contains durable structured context instead of a screenshot-only or copy-paste explanation flow.
+
 Preferred neutral install target:
 
 ```bash

@@ -4,21 +4,26 @@
 [![中文版](https://img.shields.io/badge/%E4%B8%AD%E6%96%87%E7%89%88-README.zh--CN-red)](./README.zh-CN.md)
 
 > `chrome-use` is a dedicated Chrome workflow for coding agents.
-> It solves the slow handoff between human clicks and agent actions by keeping inspect and auth in one reusable Chrome session.
-> The flagship workflow is `chrome-inspect`, backed by direct CDP control and the companion skill `chrome-auth`.
+> It solves the slow handoff between human clicks and agent actions by streaming structured page selection back to the agent in real time.
+> The flagship workflow is `chrome-inspect`, which turns one user click into durable `page`, `element`, and `content` context inside the same reusable Chrome session.
 
-Built for people shipping web apps with coding agents: product engineers, infra engineers, tool builders, and anyone who wants a fast human-in-the-loop browser loop instead of generic browser automation.
+Built for people shipping web apps with coding agents: product engineers, infra engineers, tool builders, and anyone who wants a fast human-in-the-loop browser loop without copying links, pasting screenshots, or re-explaining where on the page they mean.
 
 ![`chrome-inspect` demo](./docs/media/chrome-inspect-demo.gif)
 
-_Demo: open a page, enter inspect mode, click once, and immediately get saved selection context back in the toolbar._
+_Demo: open a page, enter inspect mode, click once, and immediately get durable selection context back in the toolbar and workflow state._
 
 ## 🚀 Milestone: `chrome-inspect` shipped
 
-`chrome-use` now ships `chrome-inspect`: a fast, full workflow for agent + operator collaboration on live pages.
+`chrome-use` now ships `chrome-inspect`: a fast, full workflow for agent + operator collaboration on live pages, with real-time structured handoff instead of copy-paste.
 
 What you get immediately:
 
+- real-time handoff from one user click to agent-readable page context
+- structured selection payloads with `page`, `element`, `content`, and location details
+- no need to paste URLs, annotate screenshots, or pollute the plugin chat with manual page explanations
+- an agent wait path that stays open for the click instead of forcing the user to come back and restate context
+- durable saved selections that can be recovered later through the toolbar and persisted state
 - one dedicated `agent-profile`, separate from your default Chrome profile
 - direct Chrome DevTools Protocol (CDP) control over a remote-debuggable Chrome instance
 - a persistent in-page inspect panel that survives reloads, same-tab navigation, and same-document navigation
@@ -26,7 +31,7 @@ What you get immediately:
 - companion auth flows through `chrome-auth`, so login and inspection live in the same dedicated browser session
 - a `latest` fast path for recovering the most recent saved selection without reopening Chrome
 
-This repo is opinionated on purpose: it is not a generic browser MCP wrapper. It is a local-first skill set for people who want faster inspect handoff, stable auth state, and a cleaner human-in-the-loop browser workflow.
+This repo is opinionated on purpose: it is not a generic browser MCP wrapper. It is a local-first skill set for people who want a faster, cleaner, and more trustworthy browser handoff between operator and agent.
 Try it, star it, and open a PR if there is a browser loop you want `chrome-use` to own.
 
 ## ✨ Why chrome-use feels different
@@ -35,8 +40,11 @@ Try it, star it, and open a PR if there is a browser loop you want `chrome-use` 
 
 - click-to-capture inspect workflow for real pages
 - first click completes the active workflow immediately
+- sends the user’s selection back to the agent as structured context instead of asking for pasted links or screenshots
+- keeps the agent waiting on the workflow so the operator does not need to restate what they clicked
 - persistent panel with a single primary action and saved selection context
 - returns `selectedElement`, `position`, `page`, `summary`, and element content for downstream DOM mutation
+- persists the last good selection so the handoff remains recoverable and auditable
 - built for agent turns that need precise UI context, not just screenshots or text dumps
 
 ### `chrome-auth`
@@ -61,6 +69,7 @@ That design matters:
 - inspect and auth share the same browser session
 - agents can keep a fast, low-overhead connection instead of repeatedly booting new browsers
 - the runtime can route selections and workflow state deterministically by `workflowId` and `captureToken`
+- user selections stay durable in persisted state instead of disappearing into one-off chat messages
 
 On macOS, the launcher keeps the dedicated Chrome instance in the background so agent activity does not steal focus. The dedicated `agent-profile` must remain a single-window Chrome instance; other Chrome windows under other profiles are allowed.
 

@@ -1,11 +1,11 @@
 ---
 name: "chrome-auth"
-description: "Handle login, auth checks, and session-preserving browser workflows in a dedicated Chrome profile."
+description: "Handle login, auth checks, and session-preserving browser workflows in the same dedicated Chrome profile used by `chrome-inspect`."
 ---
 
 # Chrome Auth Skill
 
-Use this skill for login, auth, and authorization workflows where stateful cookies or session storage must persist in the dedicated profile. It is designed to trigger both explicitly and implicitly when the user needs a stateful auth-aware browser session.
+Use this skill for login, auth, and authorization workflows where stateful cookies or session storage must persist in the dedicated profile. It is the companion to `chrome-inspect`: users log in once, keep the same browser world alive, and then hand real page selections back to the agent without rebuilding session state.
 
 ## Workflow
 
