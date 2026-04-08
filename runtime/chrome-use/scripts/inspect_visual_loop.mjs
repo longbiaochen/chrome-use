@@ -60,6 +60,14 @@ function logStep(message) {
   process.stderr.write(`[inspect-visual] ${message}\n`);
 }
 
+async function fetchJson(url) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Request failed: ${response.status} ${response.statusText} for ${url}`);
+  }
+  return response.json();
+}
+
 async function startFixtureServer() {
   const sockets = new Set();
   const server = createServer(async (req, res) => {
@@ -206,6 +214,71 @@ async function navigateHash(runtime, sessionState, hash) {
     };
   })()`);
   assertCondition(result?.hash === hash, `Failed to navigate to hash ${hash}.`, result);
+}
+
+async function setDemoOverlay(runtime, sessionState, selector, label) {
+  const escapedSelector = JSON.stringify(selector);
+  const escapedLabel = JSON.stringify(label);
+  const result = await evaluateOnTarget(runtime, sessionState, `(() => {
+    const target = document.querySelector(${escapedSelector});
+    if (!target) {
+      return { ok: false, reason: "not_found", selector: ${escapedSelector} };
+    }
+    target.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+    const rect = target.getBoundingClientRect();
+    const viewportWidth = document.documentElement.clientWidth || window.innerWidth || 1280;
+    const rootId = "__chrome_use_demo_overlay__";
+    document.getElementById(rootId)?.remove();
+    const root = document.createElement("div");
+    root.id = rootId;
+    root.style.position = "fixed";
+    root.style.inset = "0";
+    root.style.pointerEvents = "none";
+    root.style.zIndex = "2147483647";
+    const box = document.createElement("div");
+    box.style.position = "fixed";
+    box.style.left = rect.left - 6 + "px";
+    box.style.top = rect.top - 6 + "px";
+    box.style.width = rect.width + 12 + "px";
+    box.style.height = rect.height + 12 + "px";
+    box.style.borderRadius = "22px";
+    box.style.border = "4px solid #ff453a";
+    box.style.boxShadow = "0 0 0 10px rgba(255, 69, 58, 0.14)";
+    root.appendChild(box);
+    const badge = document.createElement("div");
+    badge.textContent = ${escapedLabel};
+    badge.style.position = "fixed";
+    badge.style.left = Math.min(Math.max(20, rect.left), Math.max(20, viewportWidth - 220)) + "px";
+    badge.style.top = Math.max(18, rect.top - 42) + "px";
+    badge.style.padding = "8px 12px";
+    badge.style.borderRadius = "999px";
+    badge.style.background = "#ff453a";
+    badge.style.color = "#ffffff";
+    badge.style.font = "700 13px Avenir Next, Segoe UI, sans-serif";
+    badge.style.boxShadow = "0 10px 24px rgba(255, 69, 58, 0.28)";
+    root.appendChild(badge);
+    const cursor = document.createElement("div");
+    cursor.style.position = "fixed";
+    cursor.style.left = rect.left + rect.width * 0.78 + "px";
+    cursor.style.top = rect.top + rect.height * 0.55 + "px";
+    cursor.style.width = "28px";
+    cursor.style.height = "28px";
+    cursor.style.borderRadius = "999px";
+    cursor.style.background = "#ff453a";
+    cursor.style.border = "3px solid #ffffff";
+    cursor.style.boxShadow = "0 10px 24px rgba(255, 69, 58, 0.35)";
+    root.appendChild(cursor);
+    document.documentElement.appendChild(root);
+    return { ok: true, selector: ${escapedSelector} };
+  })()`);
+  assertCondition(result?.ok, `Could not set demo overlay for ${selector}.`, result);
+}
+
+async function clearDemoOverlay(runtime, sessionState) {
+  await evaluateOnTarget(runtime, sessionState, `(() => {
+    document.getElementById("__chrome_use_demo_overlay__")?.remove();
+    return true;
+  })()`);
 }
 
 async function readToolbarMetrics(runtime, sessionState) {
@@ -409,7 +482,13 @@ async function recordStep(runtime, sessionState, outputDir, name, expectations =
 
   assertToolbarMetrics(metrics, expectations);
   const screenshotPath = path.join(outputDir, `${name}.png`);
+  if (expectations.overlay) {
+    await setDemoOverlay(runtime, sessionState, expectations.overlay.selector, expectations.overlay.label);
+  }
   await captureScreenshot(runtime, sessionState, screenshotPath);
+  if (expectations.overlay) {
+    await clearDemoOverlay(runtime, sessionState);
+  }
   return {
     name,
     screenshot: screenshotPath,
@@ -428,6 +507,7 @@ async function waitForTargetUrl(runtime, sessionState, expectedPrefix, label) {
 
 async function main() {
   const flags = parseArgs(process.argv.slice(2));
+  const demoOnly = Boolean(flags["demo-only"]);
   const outputDir = flags["output-dir"]
     ? path.resolve(String(flags["output-dir"]))
     : await mkdtemp(path.join(os.tmpdir(), "chrome-inspect-visual-"));
@@ -447,6 +527,66 @@ async function main() {
   const results = [];
 
   try {
+    if (demoOnly) {
+      logStep("Resolving startup page target for demo-only capture");
+      const startupTarget = await waitFor(async () => {
+        const list = await fetchJson(`${debugUrl}/json/list`);
+        const normalizedStartup = normalizeUrl(startupUrl);
+        return Array.isArray(list)
+          ? list.find((item) => item?.type === "page" && normalizeUrl(item?.url || "") === normalizedStartup) || null
+          : null;
+      }, 5000, "fixture page target");
+      logStep(`Demo-only startup target: ${startupTarget?.id || "missing"}`);
+      let sessionState = await waitFor(
+        async () => selectTargetSessionById(runtime, startupTarget?.id),
+        5000,
+        "fixture target attachment",
+      );
+      logStep("Capturing demo-only idle state");
+      results.push(await recordStep(runtime, sessionState, outputDir, "01-initial-idle", {
+        expectedState: "idle",
+        expectedButtonText: "",
+        expectedCollapsed: true,
+        overlay: {
+          selector: '[data-chrome-inspect-toolbar] button[data-role="inspect"]',
+          label: "Click to inspect",
+        },
+      }));
+      logStep("Entering demo-only inspect mode");
+      await clickSelector(runtime, sessionState, '[data-chrome-inspect-toolbar] button[data-role="inspect"]');
+      logStep("Capturing demo-only inspecting state");
+      results.push(await recordStep(runtime, sessionState, outputDir, "03-inspecting", {
+        expectedState: "inspecting",
+        expectedButtonText: "Inspecting",
+        expectedCollapsed: false,
+        overlay: {
+          selector: "#fixture-target",
+          label: "Pick the page target",
+        },
+      }));
+      logStep("Selecting demo-only fixture target");
+      await clickSelector(runtime, sessionState, "#fixture-target");
+      logStep("Capturing demo-only selected state");
+      results.push(await recordStep(runtime, sessionState, outputDir, "08-selected", {
+        expectedState: "idle_selected",
+        expectedButtonText: "Press this button to inspect",
+        expectedBody: true,
+        expectedCollapsed: false,
+        overlay: {
+          selector: "#fixture-target",
+          label: "Selection captured",
+        },
+      }));
+      process.stdout.write(`${JSON.stringify({
+        ok: true,
+        demoOnly: true,
+        outputDir,
+        fixtureOrigin: fixtureServer.origin,
+        screenshots: results.map((entry) => ({ name: entry.name, screenshot: entry.screenshot })),
+      }, null, 2)}\n`);
+      return;
+    }
+
     const extraTab = await openExtraTab(runtime, secondaryUrl);
     const begin = await handleInspectAction(runtime.cdp, runtime.state, { action: "begin_capture" }, 1);
     const workflowId = begin.workflowId;
@@ -463,6 +603,10 @@ async function main() {
       expectedState: "idle",
       expectedButtonText: "",
       expectedCollapsed: true,
+      overlay: {
+        selector: '[data-chrome-inspect-toolbar] button[data-role="inspect"]',
+        label: "Click to inspect",
+      },
     }));
     logStep("Validating secondary tab idle injection");
     results.push(await recordStep(runtime, secondarySessionState, outputDir, "02-secondary-tab-idle", {
@@ -477,6 +621,10 @@ async function main() {
       expectedState: "inspecting",
       expectedButtonText: "Inspecting",
       expectedCollapsed: false,
+      overlay: {
+        selector: "#fixture-target",
+        label: "Pick the page target",
+      },
     }));
 
     logStep("Reloading page while idle workflow remains injected");
@@ -528,6 +676,10 @@ async function main() {
       expectedButtonText: "Press this button to inspect",
       expectedBody: true,
       expectedCollapsed: false,
+      overlay: {
+        selector: "#fixture-target",
+        label: "Selection captured",
+      },
     }));
 
     logStep("Navigating to the second fixture page");

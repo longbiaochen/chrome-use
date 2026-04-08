@@ -36,6 +36,7 @@
 - On macOS, open or reuse the dedicated Chrome profile in the background so MCP startup does not steal user focus.
 - Use repository checks when touching runtime/packaging behavior: `bash scripts/verify-manifest.sh` and `bash scripts/test-runtime.sh`.
 - For inspect-toolbar behavior changes, also run `node runtime/chrome-use/scripts/inspect_visual_loop.mjs`.
+- For README demo refreshes, run `bash scripts/build-readme-gif.sh` (requires `ffmpeg`).
 - Visual Design Baseline
   - Base compact UI on Apple-inspired principles from the HIG and Apple UI design tips: restraint, clarity, alignment, safe spacing, consistent control geometry, and strong visual hierarchy.
   - Use a `4pt` spacing grid. Preferred steps are `4 / 8 / 12 / 16 / 20 / 24`.

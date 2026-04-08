@@ -512,6 +512,28 @@ EOF
   assert_contains "runtime/chrome-use/scripts/auth_cdp.mjs status" "$node_args" "auth-cdp wrapper delegates to shared runtime"
 }
 
+test_auth_cdp_source_tracks_page_context_and_richer_actions() {
+  local auth_source
+  auth_source="$(cat "$RUNTIME_ROOT/scripts/auth_cdp.mjs")"
+
+  assert_contains 'auth-cdp list-pages' "$auth_source" "auth-cdp usage exposes list-pages"
+  assert_contains 'auth-cdp select-page --page-id <id>' "$auth_source" "auth-cdp usage exposes select-page"
+  assert_contains 'auth-cdp wait-for --text <value>' "$auth_source" "auth-cdp usage exposes wait-for"
+  assert_contains 'auth-cdp hover --selector <css>' "$auth_source" "auth-cdp usage exposes hover"
+  assert_contains 'auth-cdp fill --selector <css> --text <text>' "$auth_source" "auth-cdp usage exposes fill"
+  assert_contains 'auth-cdp press-key --key <key>' "$auth_source" "auth-cdp usage exposes press-key"
+  assert_contains 'auth-cdp screenshot [--selector <css>]' "$auth_source" "auth-cdp usage exposes screenshot"
+  assert_contains 'auth-cdp snapshot [--mode dom|a11y]' "$auth_source" "auth-cdp usage exposes snapshot modes"
+  assert_contains 'getSelectedPagePath' "$auth_source" "auth-cdp persists selected page state"
+  assert_contains 'resolvePageState' "$auth_source" "auth-cdp resolves selected page from browser state"
+  assert_contains 'pages[pages.length - 1]' "$auth_source" "auth-cdp falls back to latest page instead of the first page"
+  assert_contains 'Accessibility.getFullAXTree' "$auth_source" "auth-cdp uses accessibility tree snapshots"
+  assert_contains 'Input.dispatchMouseEvent' "$auth_source" "auth-cdp uses mouse events for hover and click"
+  assert_contains 'Input.dispatchKeyEvent' "$auth_source" "auth-cdp supports keyboard actions"
+  assert_contains 'waitForSelector' "$auth_source" "auth-cdp waits for selectors before acting"
+  assert_contains 'waitForText' "$auth_source" "auth-cdp waits for visible text"
+}
+
 test_inspect_capture_latest_reads_persisted_selection_without_runtime() {
   setup_case
   local scope_dir="$CHROME_USE_STATE_DIR/inspect/127.0.0.1-9223"
@@ -614,6 +636,33 @@ test_visual_loop_assets_exist() {
   fi
 }
 
+test_auth_visual_assets_exist() {
+  if [[ -f "$RUNTIME_ROOT/scripts/auth_visual_loop.mjs" ]]; then
+    log_ok "auth visual loop script exists"
+  else
+    log_fail "auth visual loop script is missing"
+  fi
+
+  local build_script
+  build_script="$(cat "$REPO_ROOT/scripts/build-readme-gif.sh")"
+  assert_contains "auth_visual_loop.mjs" "$build_script" "README gif build uses auth visual loop"
+  assert_contains "inspect_visual_loop.mjs" "$build_script" "README gif build uses inspect visual loop"
+  assert_contains "chrome-auth-demo.gif" "$build_script" "README gif build outputs chrome-auth demo gif"
+  assert_contains "chrome-inspect-demo.gif" "$build_script" "README gif build outputs chrome-inspect demo gif"
+
+  if [[ -f "$REPO_ROOT/docs/releases/chrome-auth-release.md" ]]; then
+    log_ok "chrome-auth release note exists"
+  else
+    log_fail "chrome-auth release note is missing"
+  fi
+
+  if [[ -f "$REPO_ROOT/docs/releases/chrome-auth-x-draft.md" ]]; then
+    log_ok "chrome-auth X draft exists"
+  else
+    log_fail "chrome-auth X draft is missing"
+  fi
+}
+
 main() {
   test_launches_dedicated_instance
   test_reuses_running_instance_with_new_tab
@@ -630,10 +679,12 @@ main() {
   test_reuses_reachable_project_webapp_listener
   test_inspect_capture_wrapper_targets_shared_runtime
   test_auth_cdp_wrapper_targets_shared_runtime
+  test_auth_cdp_source_tracks_page_context_and_richer_actions
   test_inspect_capture_latest_reads_persisted_selection_without_runtime
   test_inspect_runtime_source_tracks_navigation_rearm
   test_inspect_capture_await_prefers_daemon_wait
   test_visual_loop_assets_exist
+  test_auth_visual_assets_exist
 
   if [[ "$failures" -gt 0 ]]; then
     echo "Runtime tests failed with $failures issue(s)." >&2

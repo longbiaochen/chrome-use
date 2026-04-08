@@ -4,54 +4,46 @@
 [![中文版](https://img.shields.io/badge/%E4%B8%AD%E6%96%87%E7%89%88-README.zh--CN-red)](./README.zh-CN.md)
 
 > `chrome-use` 是一套给 coding agent 用的专用 Chrome 工作流。
-> 它解决的是“人已经点好了页面，但 agent 还拿不到可操作上下文”的低效交接问题，把用户点选实时回传给 agent。
-> 其中最核心的能力是 `chrome-inspect`：一次点击就能在同一个可复用的 Chrome 会话里产出持久化的 `page`、`element` 和 `content` 上下文。
+> 它通过一个持续存在的专用浏览器 session，把“人点页面”和“agent 接着做事”这两段流程接成一个稳定闭环。
+> 它对外只提供两个聚焦的 skills：`chrome-inspect` 负责把真实页面选区交回 agent，`chrome-auth` 负责用 direct CDP 在真实网页里定位并推进登录流程，而且不是靠截图理解页面。
 
 适合正在用 coding agent 做 Web 开发的人：产品工程师、基础设施工程师、工具作者，以及任何希望把浏览器协作链路做得更快、更稳，而且不想再靠复制链接、截图和人工解释页面位置的人。
 
+## `chrome-use` plugin
+
+`chrome-use` 不是一个泛化浏览器包装层，而是一套本地优先的浏览器 runtime，加上两个安装即用的技能，围绕同一个严格约束展开：
+
+- 一个独立的 `agent-profile`，与默认 Chrome profile 分离
+- 一个固定的远程调试入口 `127.0.0.1:9223`
+- 一个可复用的浏览器 session，在 inspect、auth 和后续步骤之间持续共享
+
+这样做的收益很直接：
+
+- 用户在真实页面上点一次，agent 拿到的是结构化上下文，而不是截图
+- agent 可以在同一个专用浏览器里完成登录，不用每次重新起一个临时浏览器
+- 页面状态、cookie 和登录态能跨回合保留，后续工作可以直接接着做
+
+## `chrome-inspect`
+
+`chrome-inspect` 是 `chrome-use` 里偏 inspect 的 skill：用户在真实页面上点一次目标，agent 就能在同一回合拿到可直接修改页面的结构化上下文。
+
 ![`chrome-inspect` 演示](./docs/media/chrome-inspect-demo.gif)
 
-_演示：打开页面，进入 inspect 模式，完成一次真实点击后，工具条和工作流状态立即拿到可恢复的 selection 上下文。_
+_演示：打开页面内的 inspect 面板，清楚地看到进入 inspect 模式的点击过程，再选中真实目标，把结构化页面上下文回传给 agent，而不是丢一张截图。_
 
-## 🚀 里程碑：`chrome-inspect` 已上线
+在实现上，`chrome-inspect` 会把面板常驻在 dedicated agent browser 里，持久化最近一次有效选择，并返回 `selectedElement`、页面信息、片段和位置等后续 DOM 修改真正需要的上下文。
 
-`chrome-use` 现在正式发布了 `chrome-inspect`：一套更快、更完整的真实页面 inspect 工作流，用来让 agent 和操作者协同处理线上或本地页面，并把点选实时变成结构化上下文。
+## `chrome-auth`
 
-你在首页第一屏就能获得这些能力：
+`chrome-auth` 是 `chrome-use` 里偏 auth 的 skill：它通过 direct Chrome CDP 在真实页面里搜索、定位并推进注册或登录流程，而不是把页面当作一张图片去猜。
 
-- 用户一次点击，就能实时回传给 agent 可读的页面上下文
-- 返回结构化的选择结果，包括 `page`、`element`、`content` 和位置细节
-- 不需要再贴链接、传截图、或者在插件对话里反复描述“我指的是页面哪一块”
-- agent 会保持等待当前工作流，而不是让用户点完以后再回来重新粘贴上下文
-- 选择结果会被持久化保存，之后还能从工具条或状态文件中恢复
-- 一个独立的 `agent-profile`，与默认 Chrome profile 分离
-- 通过 Chrome DevTools Protocol（CDP）直接控制可远程调试的 Chrome 实例
-- 一个持久化的页面内 inspect 面板，可跨刷新、同标签导航和同文档导航保留
-- 一个 `begin -> await -> apply` 工作流，第一次真实点击后就能直接返回可用于 DOM 修改的上下文
-- 通过 `chrome-auth` 提供配套鉴权流程，使登录态与 inspect 能共享同一个专用浏览器会话
-- 一个 `latest` 快速恢复路径，可在不重新打开 Chrome 的情况下恢复最近一次已保存选择
+![`chrome-auth` 演示](./docs/media/chrome-auth-demo.gif)
 
-这个仓库是刻意有观点的：它不是一个泛化的浏览器 MCP 包装层，而是一套本地优先、强调更快、更省事、也更让人安心的人机协作浏览器技能集。
-欢迎直接试用、star，或者在你想让 `chrome-use` 接管的浏览器闭环上直接提 PR。
+_演示：打开本地 auth fixture，定位真正的 `Sign up` 入口，帮 `John Appleseed` 完成注册，进入登录页后再用同一账号登录，在 dedicated agent browser 里把 auth 闭环跑完。_
 
-## ✨ 为什么 chrome-use 不一样
+在实现上，`chrome-auth` 运行在同一个 dedicated session 中，支持枚举和切换标签页、读取结构化快照、等待状态变化，并直接通过 CDP 执行 click / fill / type，而不是回退到靠截图做页面理解。
 
-### `chrome-inspect`
-
-- 面向真实页面的点击选取 inspect 工作流
-- 第一次点击就会立刻完成当前工作流
-- 把用户的点选直接回传给 agent，避免再靠贴链接或截图解释页面位置
-- agent 会持续等待这次点选，不要求用户回来重新描述刚刚点了什么
-- 持久面板只保留一个主按钮，并展示保存后的选择上下文
-- 返回 `selectedElement`、`position`、`page`、`summary` 和元素内容，供后续 DOM 修改直接使用
-- 最近一次有效选择会被持久化保存，方便恢复，也更让协作过程可追踪
-- 面向需要精确 UI 上下文的 agent 回合，而不是只给截图或文本 dump
-
-### `chrome-auth`
-
-- 在同一个专用浏览器里完成操作者驱动的登录与授权
-- 将 cookie、session 和 local storage 保留在专用 agent profile 中
-- 登录完成后，agent 可以继续在同一会话中导航、查看状态、截图、点击、输入并继续工作
+## General
 
 ## 🧠 架构
 
@@ -100,6 +92,7 @@ chrome-use 刻意比这些工具更窄。窄反而是优势：它不是试图包
 
 ## 📝 发布说明
 
+- [`chrome-auth` 发布说明](./docs/releases/chrome-auth-release.md)
 - [`chrome-inspect` milestone release notes](./docs/releases/chrome-inspector-milestone.md)
 
 ## Fast install
@@ -150,7 +143,10 @@ skills/chrome-inspect/scripts/inspect_select_element.sh "/path/to/repo"
 ```bash
 bash skills/chrome-auth/scripts/open_url.sh "https://example.com/login"
 skills/chrome-auth/scripts/auth-cdp status
-skills/chrome-auth/scripts/auth-cdp snapshot --output /tmp/auth.png
+skills/chrome-auth/scripts/auth-cdp list-pages
+skills/chrome-auth/scripts/auth-cdp select-page --page-id "<page-id>"
+skills/chrome-auth/scripts/auth-cdp snapshot --mode a11y
+skills/chrome-auth/scripts/auth-cdp screenshot --output /tmp/auth.png
 ```
 
 ## Client support
@@ -269,7 +265,7 @@ Codex 的推荐行为是先 arm inspect mode，然后保持等待操作者点击
 - fallback 行为：只有当客户端确实无法可靠维持长时间 tool call 时，才在 arm inspect mode 之后立即返回，并明确告诉用户先去点击页面，再回来继续。
 - 不要把“等一会儿然后超时”当作默认 UX。要么持续等待，要么立即返回并清楚说明下一步怎么做。
 
-对于 `/chrome-auth`，当已知目标 URL 时直接附上 URL 命令，然后通过同一个专用 profile session 里的 `scripts/auth-cdp` 完成状态检查、导航、截图、元素查找、点击和输入。
+对于 `/chrome-auth`，当已知目标 URL 时直接附上 URL 命令，然后通过同一个专用 profile session 里的 `scripts/auth-cdp` 完成状态检查、页面切换、结构化快照、截图、元素查找、点击、填充、输入、等待和按键操作。
 
 如需从本仓库验证打包、命令可用性和 fallback 行为，请运行：
 

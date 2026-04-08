@@ -7,6 +7,8 @@ description: "Capture a live page selection in a dedicated Chrome profile and st
 
 Use this skill when an agent needs deterministic, inspect-first Chrome DOM work in a dedicated profile. It is designed for the moment when a user can point at the page faster than they can explain it in chat. Instead of asking for pasted URLs or screenshots, `chrome-inspect` waits for the real click, captures the exact target, and returns durable structured context that the agent can act on immediately.
 
+Command entrypoints live in this skill's own `scripts/` directory. Resolve the directory that contains this `SKILL.md`, then invoke `<skill-dir>/scripts/open_url.sh`, `<skill-dir>/scripts/inspect-capture`, and `<skill-dir>/scripts/inspect_select_element.sh` directly. Do not assume a repo-root `scripts/` directory contains these public commands.
+
 ## Workflow
 
 1. Resolve startup URL in this priority:
@@ -17,14 +19,14 @@ Use this skill when an agent needs deterministic, inspect-first Chrome DOM work 
   - `about:blank`
 2. Never skip repo detection just because the user omitted a URL. If the request is about the current local project, treat the repo as the source of truth and let the shared runtime infer the preview entry before falling back to `about:blank`.
 3. Start local docs web server (for local docs URLs) before opening Chrome when documented. The command wrapper should do this automatically for the detected project webapp entry.
-4. Start or reuse Chrome with the resolved URL through `bash scripts/open_url.sh "<resolved_url>"`.
+4. Start or reuse Chrome with the resolved URL through `bash "<skill-dir>/scripts/open_url.sh" "<resolved_url>"`.
    Reuse must open a new tab on the running dedicated-profile instance instead of creating a second dedicated window.
 5. Use the direct-CDP inspect CLI for selection capture by default:
-   - `scripts/inspect-capture begin --project-root "<repo>"`
-   - `scripts/inspect-capture await --workflow-id "<workflowId>"`
-   - `scripts/inspect-capture latest` when a later turn asks for the most recent saved selection
+   - `"<skill-dir>/scripts/inspect-capture" begin --project-root "<repo>"`
+   - `"<skill-dir>/scripts/inspect-capture" await --workflow-id "<workflowId>"`
+   - `"<skill-dir>/scripts/inspect-capture" latest` when a later turn asks for the most recent saved selection
      This is a local fast path: read the persisted latest selection directly and skip browser attach, startup URL resolution, repo lookup, and any extra search flow.
-   - or the one-shot path: `scripts/inspect_select_element.sh "<repo>"`
+   - or the one-shot path: `"<skill-dir>/scripts/inspect_select_element.sh" "<repo>"`
 6. Ensure the session is attached to the dedicated debug endpoint and that the dedicated profile still has exactly one Chrome window.
 7. The direct inspect runtime should pass the startup URL into the shared runtime so capture prioritizes the freshly opened target instead of attaching unrelated tabs on the same debug endpoint.
 8. Confirm inspect mode is armed, then have the user use the persistent page toolbar to click a target in Chrome.
@@ -50,11 +52,11 @@ Use this skill when an agent needs deterministic, inspect-first Chrome DOM work 
    - `position`
    - the element content from `selectedElement.snippet` or equivalent captured text
 12. After reporting that richer element context, ask one concrete DOM instruction.
-13. Re-run the same workflow with `scripts/inspect-capture apply --workflow-id "<workflowId>" --instruction "<user text>"`.
+13. Re-run the same workflow with `"<skill-dir>/scripts/inspect-capture" apply --workflow-id "<workflowId>" --instruction "<user text>"`.
 14. Treat `apply` as ending the capture workflow only.
     It should not remove the toolbar from the page; the toolbar stays resident in the dedicated profile and the next capture will re-arm inspect mode.
 15. For a later-turn "what is the latest selection?" recovery request, do not reuse an older cached `workflowId`.
-    Call `scripts/inspect-capture latest` so the reply is sourced from the persisted most recent successful selection.
+    Call `"<skill-dir>/scripts/inspect-capture" latest` so the reply is sourced from the persisted most recent successful selection.
     Do not open Chrome, resolve the preview URL, attach runtime sessions, or search the repo for this recovery path.
 
 ## Toolbar behavior
@@ -78,13 +80,13 @@ Use this skill when an agent needs deterministic, inspect-first Chrome DOM work 
 
 ## Tools
 
-### `scripts/open_url.sh`
+### `<skill-dir>/scripts/open_url.sh`
 Starts or reuses dedicated Chrome, enforces the single-window dedicated-profile invariant, and prints the active debug URL.
 
-### `scripts/inspect-capture`
+### `<skill-dir>/scripts/inspect-capture`
 Runs direct-CDP element capture against the dedicated Chrome debug endpoint without requiring a manual MCP handshake.
 
-### `scripts/inspect_select_element.sh`
+### `<skill-dir>/scripts/inspect_select_element.sh`
 One-shot helper that opens or reuses the repo preview, arms capture, waits for a fresh click, and prints normalized JSON.
 
 ## Fast path
@@ -92,15 +94,15 @@ One-shot helper that opens or reuses the repo preview, arms capture, waits for a
 Preferred two-command flow:
 
 ```bash
-bash scripts/open_url.sh "http://127.0.0.1:8000/"
-scripts/inspect-capture begin --project-root "/path/to/repo"
-scripts/inspect-capture await --workflow-id "<workflowId>"
+bash "<skill-dir>/scripts/open_url.sh" "http://127.0.0.1:8000/"
+"<skill-dir>/scripts/inspect-capture" begin --project-root "/path/to/repo"
+"<skill-dir>/scripts/inspect-capture" await --workflow-id "<workflowId>"
 ```
 
 Preferred one-shot flow:
 
 ```bash
-scripts/inspect_select_element.sh "/path/to/repo"
+"<skill-dir>/scripts/inspect_select_element.sh" "/path/to/repo"
 ```
 
 Expected result:

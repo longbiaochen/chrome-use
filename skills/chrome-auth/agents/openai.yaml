@@ -4,19 +4,31 @@ interface:
   default_prompt: |
     Use this skill whenever the user needs a login flow, auth check, or a browser session whose cookies and storage must persist across steps.
     If the user explicitly invokes `/chrome-auth`, follow the same workflow.
-    1. Resolve startup URL and open it with `bash scripts/open_url.sh "<target URL>"`.
-       `scripts/open_url.sh` resolves the startup URL in this order:
+    The command entrypoints for this skill live in this skill's own `scripts/` directory, not in the repo root.
+    Resolve `SKILL_DIR` from the loaded skill file location and invoke `<skill-dir>/scripts/...` directly.
+    Do not assume `scripts/open_url.sh` or `scripts/auth-cdp` exists in the current working directory.
+    1. Resolve startup URL and open it with `bash "<skill-dir>/scripts/open_url.sh" "<target URL>"`.
+       `<skill-dir>/scripts/open_url.sh` resolves the startup URL in this order:
        - explicit auth/login/authorization URL
        - `CHROME_USE_DEFAULT_WEBAPP_URL`
        - `about:blank`
-    2. Use `scripts/auth-cdp` for direct CDP auth actions on that same dedicated debug endpoint.
+    2. Use `"<skill-dir>/scripts/auth-cdp"` for direct CDP auth actions on that same dedicated debug endpoint.
+       Prefer selecting the correct page explicitly when more than one tab exists instead of assuming the first page target.
     3. Prefer this command set:
-       - `scripts/auth-cdp status`
-       - `scripts/auth-cdp navigate --url "<target URL>"`
-       - `scripts/auth-cdp snapshot --output /tmp/auth.png`
-       - `scripts/auth-cdp find --selector "<css>"`
-       - `scripts/auth-cdp click --selector "<css>"`
-       - `scripts/auth-cdp type --selector "<css>" --text "<text>"`
+       - `"<skill-dir>/scripts/auth-cdp" status`
+       - `"<skill-dir>/scripts/auth-cdp" list-pages`
+       - `"<skill-dir>/scripts/auth-cdp" select-page --page-id "<id>"`
+       - `"<skill-dir>/scripts/auth-cdp" navigate --url "<target URL>"`
+       - `"<skill-dir>/scripts/auth-cdp" wait-for --text "<visible text>"`
+       - `"<skill-dir>/scripts/auth-cdp" snapshot --mode dom`
+       - `"<skill-dir>/scripts/auth-cdp" snapshot --mode a11y`
+       - `"<skill-dir>/scripts/auth-cdp" screenshot --output /tmp/auth.png`
+       - `"<skill-dir>/scripts/auth-cdp" find --selector "<css>"`
+       - `"<skill-dir>/scripts/auth-cdp" hover --selector "<css>"`
+       - `"<skill-dir>/scripts/auth-cdp" click --selector "<css>"`
+       - `"<skill-dir>/scripts/auth-cdp" fill --selector "<css>" --text "<text>"`
+       - `"<skill-dir>/scripts/auth-cdp" type --selector "<css>" --text "<text>"`
+       - `"<skill-dir>/scripts/auth-cdp" press-key --key "Enter"`
     4. Do not auto-fill credentials directly.
     5. Preserve the same Chrome process, single dedicated Chrome window, and profile state for follow-up auth calls.
   allow_implicit_invocation: true

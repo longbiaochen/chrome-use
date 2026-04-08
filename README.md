@@ -4,54 +4,46 @@
 [![中文版](https://img.shields.io/badge/%E4%B8%AD%E6%96%87%E7%89%88-README.zh--CN-red)](./README.zh-CN.md)
 
 > `chrome-use` is a dedicated Chrome workflow for coding agents.
-> It solves the slow handoff between human clicks and agent actions by streaming structured page selection back to the agent in real time.
-> The flagship workflow is `chrome-inspect`, which turns one user click into durable `page`, `element`, and `content` context inside the same reusable Chrome session.
+> It solves the slow handoff between human clicks and agent actions by keeping a dedicated browser session alive, then turning human intent into agent-usable context and browser state.
+> It ships two focused public skills: `chrome-inspect` for live page selection handoff, and `chrome-auth` for direct-CDP auth flows that find and use the real login surface without relying on screenshots.
 
-Built for people shipping web apps with coding agents: product engineers, infra engineers, tool builders, and anyone who wants a fast human-in-the-loop browser loop without copying links, pasting screenshots, or re-explaining where on the page they mean.
+Built for people shipping web apps with coding agents: product engineers, infra engineers, tool builders, and anyone who wants a fast human-in-the-loop browser loop without copying links, pasting screenshots, or re-explaining what part of the page matters.
+
+## `chrome-use` plugin
+
+`chrome-use` is not a generic browser wrapper. It is a local-first browser runtime plus two installable skills built around one strict contract:
+
+- one dedicated `agent-profile`, separate from your default Chrome profile
+- one remote-debuggable Chrome endpoint at `127.0.0.1:9223`
+- one reusable browser session shared across inspect, auth, and whatever comes next
+
+That gives you a cleaner handoff between operator and agent:
+
+- the operator can point at a live page once, and the agent gets structured context instead of a screenshot
+- the agent can finish auth in the same dedicated browser instead of redoing login in a throwaway session
+- browser state stays stable across turns, so follow-up work starts from the page the user already prepared
+
+## `chrome-inspect`
+
+`chrome-inspect` is the inspect-first skill in `chrome-use`: the operator clicks a live target once, and the agent gets mutation-ready page context back in the same turn.
 
 ![`chrome-inspect` demo](./docs/media/chrome-inspect-demo.gif)
 
-_Demo: open a page, enter inspect mode, click once, and immediately get durable selection context back in the toolbar and workflow state._
+_Demo: open the in-page inspect panel, visibly click into inspect mode, select the real target on the page, and return durable structured context instead of a screenshot._
 
-## 🚀 Milestone: `chrome-inspect` shipped
+Under the hood, `chrome-inspect` keeps a persistent in-page panel inside the dedicated agent browser, preserves the latest good selection, and returns `selectedElement`, page metadata, snippets, and element position for downstream DOM mutation.
 
-`chrome-use` now ships `chrome-inspect`: a fast, full workflow for agent + operator collaboration on live pages, with real-time structured handoff instead of copy-paste.
+## `chrome-auth`
 
-What you get immediately:
+`chrome-auth` is the auth-first skill in `chrome-use`: it uses direct Chrome CDP to search the real page, find the correct sign-up or log-in entry point, and move through web auth flows without treating the page like an image.
 
-- real-time handoff from one user click to agent-readable page context
-- structured selection payloads with `page`, `element`, `content`, and location details
-- no need to paste URLs, annotate screenshots, or pollute the plugin chat with manual page explanations
-- an agent wait path that stays open for the click instead of forcing the user to come back and restate context
-- durable saved selections that can be recovered later through the toolbar and persisted state
-- one dedicated `agent-profile`, separate from your default Chrome profile
-- direct Chrome DevTools Protocol (CDP) control over a remote-debuggable Chrome instance
-- a persistent in-page inspect panel that survives reloads, same-tab navigation, and same-document navigation
-- a `begin -> await -> apply` workflow that returns mutation-ready DOM context from the first real click
-- companion auth flows through `chrome-auth`, so login and inspection live in the same dedicated browser session
-- a `latest` fast path for recovering the most recent saved selection without reopening Chrome
+![`chrome-auth` demo](./docs/media/chrome-auth-demo.gif)
 
-This repo is opinionated on purpose: it is not a generic browser MCP wrapper. It is a local-first skill set for people who want a faster, cleaner, and more trustworthy browser handoff between operator and agent.
-Try it, star it, and open a PR if there is a browser loop you want `chrome-use` to own.
+_Demo: open a local auth fixture, locate the real `Sign up` button, register `John Appleseed`, land on the login page, then log in with the same account and finish the loop inside the dedicated agent browser._
 
-## ✨ Why chrome-use feels different
+Under the hood, `chrome-auth` stays in the same dedicated session, can list and select tabs, inspect structured snapshots, wait for page state changes, and drive click/fill/type flows directly through CDP instead of falling back to screenshot-only automation.
 
-### `chrome-inspect`
-
-- click-to-capture inspect workflow for real pages
-- first click completes the active workflow immediately
-- sends the user’s selection back to the agent as structured context instead of asking for pasted links or screenshots
-- keeps the agent waiting on the workflow so the operator does not need to restate what they clicked
-- persistent panel with a single primary action and saved selection context
-- returns `selectedElement`, `position`, `page`, `summary`, and element content for downstream DOM mutation
-- persists the last good selection so the handoff remains recoverable and auditable
-- built for agent turns that need precise UI context, not just screenshots or text dumps
-
-### `chrome-auth`
-
-- operator-driven login and authorization in the same dedicated browser
-- keeps cookies, sessions, and local storage inside the dedicated agent profile
-- lets the agent navigate, inspect status, screenshot, click, type, and continue work after auth is done
+## General
 
 ## 🧠 Architecture
 
@@ -100,6 +92,7 @@ Both public skills may be invoked explicitly or implicitly.
 
 ## 📝 Release note
 
+- [`chrome-auth` release notes](./docs/releases/chrome-auth-release.md)
 - [`chrome-inspect` milestone release notes](./docs/releases/chrome-inspector-milestone.md)
 
 ## Fast install
@@ -150,7 +143,10 @@ skills/chrome-inspect/scripts/inspect_select_element.sh "/path/to/repo"
 ```bash
 bash skills/chrome-auth/scripts/open_url.sh "https://example.com/login"
 skills/chrome-auth/scripts/auth-cdp status
-skills/chrome-auth/scripts/auth-cdp snapshot --output /tmp/auth.png
+skills/chrome-auth/scripts/auth-cdp list-pages
+skills/chrome-auth/scripts/auth-cdp select-page --page-id "<page-id>"
+skills/chrome-auth/scripts/auth-cdp snapshot --mode a11y
+skills/chrome-auth/scripts/auth-cdp screenshot --output /tmp/auth.png
 ```
 
 ## Client support
@@ -269,7 +265,7 @@ The preferred Codex behavior is to arm inspect mode and then keep waiting for th
 - Fallback behavior: only if the client cannot reliably keep a long-running tool call alive, return immediately after arming inspect mode and tell the operator to click the page and then come back.
 - Do not use “wait a bit and maybe timeout” as the normal UX. Either keep waiting, or return immediately and say exactly what the user should do next.
 
-For `/chrome-auth`, send the command with target URL when known, then use `scripts/auth-cdp` for page status, navigation, screenshots, element lookup, clicks, and typing in the same dedicated profile session.
+For `/chrome-auth`, send the command with target URL when known, then use `scripts/auth-cdp` for page status, page selection, structured snapshots, screenshots, element lookup, clicks, fill/type actions, waits, and key presses in the same dedicated profile session.
 
 To verify packaging, command availability, and fallback behavior from this repository, run:
 

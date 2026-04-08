@@ -51,26 +51,27 @@ Recommended verification for public skills:
 
 1. Reinstall/update skills:
    `bash install/install-codex-skill.sh`
-2. Send `/chrome-inspect` in chat.
-3. Chrome session is opened through `scripts/open_url.sh` with the resolved startup URL, and the local project web app is auto-started first when `CHROME_INSPECT_PROJECT_ROOT` is configured or the current repo can be inferred as the local project.
+2. Resolve each public command from the installed skill directory, not from the repo root `scripts/` directory. The skill entrypoints are `~/.codex/skills/chrome-inspect/scripts/...` and `~/.codex/skills/chrome-auth/scripts/...` after install.
+3. Send `/chrome-inspect` in chat.
+4. Chrome session is opened through the installed skill's `scripts/open_url.sh` with the resolved startup URL, and the local project web app is auto-started first when `CHROME_INSPECT_PROJECT_ROOT` is configured or the current repo can be inferred as the local project.
    Reuse keeps the dedicated `agent-profile` on a single Chrome window and opens a new tab on that running instance.
    If the expected preview port is already listening but the target URL is still unreachable, the runtime should stop immediately with a listener-blocker error instead of starting another server.
-4. The runtime should prioritize the freshly opened target instead of attaching unrelated tabs.
-5. The client calls `scripts/inspect-capture begin --project-root "<repo>"` and stores `workflowId`.
-6. In Chrome, use the persistent page toolbar to enter inspect mode, then click the target element only after inspect mode is armed.
-7. The client calls `scripts/inspect-capture await --workflow-id "<workflowId>"`.
-8. Treat the result as valid only if it belongs to the current `workflowId` and follows a fresh click for the current capture cycle.
+5. The runtime should prioritize the freshly opened target instead of attaching unrelated tabs.
+6. The client calls `~/.codex/skills/chrome-inspect/scripts/inspect-capture begin --project-root "<repo>"` and stores `workflowId`.
+7. In Chrome, use the persistent page toolbar to enter inspect mode, then click the target element only after inspect mode is armed.
+8. The client calls `~/.codex/skills/chrome-inspect/scripts/inspect-capture await --workflow-id "<workflowId>"`.
+9. Treat the result as valid only if it belongs to the current `workflowId` and follows a fresh click for the current capture cycle.
    If `await_selection` appears to return immediately with stale prior context, restart capture instead of presenting it as the new selection.
-9. For a later-turn "latest selection" recovery request, call `scripts/inspect-capture latest`.
+10. For a later-turn "latest selection" recovery request, call `~/.codex/skills/chrome-inspect/scripts/inspect-capture latest`.
    Do not reuse an earlier turn's cached `workflowId` to answer "latest".
    This should be handled as a local file read, not a fresh browser/runtime attach and not a new preview lookup.
-10. Confirm the agent does not conclude the turn before the tool returns `phase=awaiting_user_instruction`.
+11. Confirm the agent does not conclude the turn before the tool returns `phase=awaiting_user_instruction`.
     The user should not need to come back with a pasted URL, screenshot, or extra explanation after they already clicked the page.
-11. Confirm the agent reports enough selected-element detail after `phase=awaiting_user_instruction`:
+12. Confirm the agent reports enough selected-element detail after `phase=awaiting_user_instruction`:
    `summary`, `workflowId`, tag / `selectedElement.nodeName`, `selectedElement.selectorHint`,
    `selectedElement.id`, `selectedElement.className`, `selectedElement.ariaLabel`, page URL,
    `position`, and the element content from `selectedElement.snippet` or equivalent captured text.
-12. Reply with a concrete edit instruction.
-13. Confirm returned `phase=ready_to_apply` after `scripts/inspect-capture apply --workflow-id "<workflowId>" --instruction "<user instruction>"`.
+13. Reply with a concrete edit instruction.
+14. Confirm returned `phase=ready_to_apply` after `~/.codex/skills/chrome-inspect/scripts/inspect-capture apply --workflow-id "<workflowId>" --instruction "<user instruction>"`.
 
-For `/chrome-auth`, send the explicit auth URL and then use `scripts/auth-cdp` for login/authorization actions while keeping the same dedicated profile, debug endpoint, and single dedicated Chrome window.
+For `/chrome-auth`, send the explicit auth URL and then use `~/.codex/skills/chrome-auth/scripts/auth-cdp` for login/authorization actions while keeping the same dedicated profile, debug endpoint, and single dedicated Chrome window. Prefer `list-pages` and `select-page` before interaction when more than one tab is open, and use `snapshot --mode dom|a11y`, `screenshot`, `wait-for`, `fill`, `hover`, and `press-key` instead of falling back to screenshot-only flows.

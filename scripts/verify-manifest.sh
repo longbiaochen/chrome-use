@@ -142,6 +142,35 @@ check_wrapper_targets() {
   fi
 }
 
+check_codex_prompt_entrypoints() {
+  local inspect_prompt="$SKILLS_ROOT/chrome-inspect/agents/openai.yaml"
+  local auth_prompt="$SKILLS_ROOT/chrome-auth/agents/openai.yaml"
+
+  if rg -q '`bash scripts/open_url\.sh ".*"' "$inspect_prompt" || rg -q '`scripts/inspect-capture (begin|await|apply|latest)' "$inspect_prompt"; then
+    log_fail "chrome-inspect Codex prompt must not assume repo-root scripts/ entrypoints"
+  else
+    log_ok "chrome-inspect Codex prompt avoids repo-root scripts/ entrypoints"
+  fi
+
+  if rg -q '`bash scripts/open_url\.sh ".*"' "$auth_prompt" || rg -q '`scripts/auth-cdp (status|navigate|snapshot|find|click|type)' "$auth_prompt"; then
+    log_fail "chrome-auth Codex prompt must not assume repo-root scripts/ entrypoints"
+  else
+    log_ok "chrome-auth Codex prompt avoids repo-root scripts/ entrypoints"
+  fi
+
+  if rg -Fq "<skill-dir>/scripts/open_url.sh" "$inspect_prompt" && rg -Fq "<skill-dir>/scripts/inspect-capture" "$inspect_prompt"; then
+    log_ok "chrome-inspect Codex prompt points at skill-local scripts"
+  else
+    log_fail "chrome-inspect Codex prompt must point at skill-local scripts"
+  fi
+
+  if rg -Fq "<skill-dir>/scripts/open_url.sh" "$auth_prompt" && rg -Fq "<skill-dir>/scripts/auth-cdp" "$auth_prompt"; then
+    log_ok "chrome-auth Codex prompt points at skill-local scripts"
+  else
+    log_fail "chrome-auth Codex prompt must point at skill-local scripts"
+  fi
+}
+
 check_forbidden_references() {
   local forbidden=(
     "chrome-devtools-mcp"
@@ -252,6 +281,7 @@ main() {
   check_skill_metadata
   check_startup_url_resolution
   check_wrapper_targets
+  check_codex_prompt_entrypoints
   check_forbidden_references
 
   if (( failures > 0 )); then

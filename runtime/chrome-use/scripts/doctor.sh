@@ -47,7 +47,7 @@ if [[ "$matching_count" -eq 1 ]]; then
 
     echo "Window count: $window_count"
     if [[ "$window_count" == "0" && "$page_target_count" -gt 0 ]]; then
-      echo "Status: dedicated profile is ready for Chrome DevTools MCP (page-target fallback)"
+      echo "Status: dedicated profile is ready (page-target fallback)"
       exit 0
     fi
     if [[ "$window_count" != "1" ]]; then
@@ -58,7 +58,7 @@ if [[ "$matching_count" -eq 1 ]]; then
     echo "Window count: unsupported"
   fi
 
-  echo "Status: dedicated profile is ready for Chrome DevTools MCP"
+  echo "Status: dedicated profile is ready"
   exit 0
 fi
 
