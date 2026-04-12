@@ -128,7 +128,7 @@ After install, exposed skills are:
 - `~/.codex/skills/chrome-inspect`
 - `~/.codex/skills/chrome-auth`
 
-`chrome-use` itself is not exposed as a standalone skill or command. Installed shared runtime code lives under `~/.chrome-use/dist/runtime/chrome-use/`.
+`chrome-use` itself is not exposed as a standalone skill or command. Installed shared runtime code lives under `~/.chrome-use/runtime/chrome-use/`, and the managed public skill payloads live under `~/.chrome-use/skills/`.
 
 ## Direct CDP workflows
 
@@ -198,7 +198,8 @@ The public repo is client-neutral by default:
 - profile dir: `~/.chrome-use/agent-profile`
 - state dir: `~/.chrome-use/state`
 - install root: `~/.chrome-use`
-- managed dist root: `~/.chrome-use/dist`
+- managed runtime root: `~/.chrome-use/runtime/chrome-use`
+- managed skills root: `~/.chrome-use/skills`
 - debug URL: `http://127.0.0.1:9223`
 
 Runtime contract:
@@ -223,7 +224,9 @@ Manual user entrypoint on macOS:
 bash scripts/install-agent-profile-chrome-app.sh
 ```
 
-That installs a Dock item named `Agent Profile Chrome`. Open that app whenever you want to prepare cookies, keep long-lived login state, or create Chrome Web Apps that should live in the dedicated `agent-profile`. Unlike the background agent launcher, this user-facing entrypoint explicitly brings the dedicated-profile Chrome process to the foreground.
+For Codex installs on macOS, the unified installer now creates this app by default. The standalone script remains available for explicit reinstall or non-Codex installs.
+That installs a Dock item named `Agent Profile Chrome`. Open that app whenever you want to prepare cookies, keep long-lived login state, or create Chrome Web Apps that should live in the dedicated `agent-profile`. Unlike the background agent launcher, this user-facing entrypoint opens the same dedicated profile and reuses the same CDP runtime that `chrome-inspect` and `chrome-auth` attach to later.
+The app bundle itself lives in `~/Applications/Agent Profile Chrome.app`; it is intentionally not installed under `~/.chrome-use`.
 
 `CHROME_USE_DEFAULT_WEBAPP_URL` is used as optional URL fallback before `about:blank`.
 For `/chrome-inspect`, set `CHROME_INSPECT_PROJECT_ROOT` (for example `/Users/longbiao/Projects/home-page`) to let the helper auto-resolve the project's docs web app entry.

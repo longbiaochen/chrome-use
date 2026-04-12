@@ -132,88 +132,19 @@ list_profile_root_pids() {
   done < <(ps ax -o pid= -o command=)
 }
 
+list_profile_root_commands() {
+  local pid command_line
+  while read -r pid command_line; do
+    [[ -n "${pid:-}" ]] || continue
+    if is_browser_root_process "$command_line"; then
+      echo "$command_line"
+    fi
+  done < <(ps ax -o pid= -o command=)
+}
+
 list_profile_pids() {
   ps ax -o pid= -o command= \
     | awk -v profile="$PROFILE_DIR" '
         index($0, profile) { print $1 }
       '
-}
-
-window_count_for_pid() {
-  local pid="$1"
-  local os
-  os="$(platform)"
-
-  case "$os" in
-    macos)
-      osascript <<EOF
-tell application "System Events"
-  set targetPid to ${pid}
-  set matchingProcesses to every process whose unix id is targetPid
-  if (count of matchingProcesses) is 0 then
-    return "0"
-  end if
-  set targetProcess to item 1 of matchingProcesses
-  return (count of windows of targetProcess) as string
-end tell
-EOF
-      ;;
-    *)
-      echo "unsupported"
-      ;;
-  esac
-}
-
-app_window_count() {
-  local os
-  os="$(platform)"
-
-  case "$os" in
-    macos)
-      osascript <<'EOF'
-tell application "Google Chrome"
-  return (count of windows) as string
-end tell
-EOF
-      ;;
-    *)
-      echo "unsupported"
-      ;;
-  esac
-}
-
-determine_dedicated_window_count() {
-  local pid="$1"
-  local os
-  local window_count
-  local visible_window_count
-  local page_target_count
-
-  os="$(platform)"
-  if [[ "$os" != "macos" ]]; then
-    echo "unsupported"
-    return 0
-  fi
-
-  if ! window_count="$(window_count_for_pid "$pid" 2>/dev/null)"; then
-    echo "unavailable"
-    return 1
-  fi
-
-  page_target_count="$(debug_page_target_count)"
-  if [[ "$window_count" == "0" && "$page_target_count" -gt 0 ]]; then
-    echo "$window_count"
-    return 0
-  fi
-
-  if [[ "$window_count" != "1" ]]; then
-    if visible_window_count="$(app_window_count 2>/dev/null)"; then
-      if [[ -n "${visible_window_count:-}" && "$visible_window_count" != "unsupported" && "$page_target_count" -gt 0 ]]; then
-        window_count="$visible_window_count"
-      fi
-    fi
-  fi
-
-  echo "$window_count"
-  return 0
 }

@@ -16,6 +16,7 @@ fi
 matching_pids="$(list_matching_pids || true)"
 profile_pids="$(list_profile_pids || true)"
 profile_root_pids="$(list_profile_root_pids || true)"
+profile_root_commands="$(list_profile_root_commands || true)"
 matching_count="$(count_lines "$matching_pids")"
 profile_count="$(count_lines "$profile_root_pids")"
 page_target_count="0"
@@ -28,50 +29,23 @@ echo "Matching PID count: $matching_count"
 echo "Matching PID(s): ${matching_pids:-none}"
 echo "Profile PID(s): ${profile_pids:-none}"
 echo "Profile owner PID(s): ${profile_root_pids:-none}"
+echo "Profile owner command(s): ${profile_root_commands:-none}"
 echo "Page target count: ${page_target_count}"
 
 if [[ "$matching_count" -gt 1 ]]; then
-  echo "Window count: unknown"
   echo "Status: blocker; multiple dedicated-profile Chrome processes are exposing the canonical debug port"
   exit 1
 fi
 
 if [[ "$matching_count" -eq 1 ]]; then
-  pid="$(awk 'NF { print; exit }' <<<"$matching_pids")"
-  if [[ "$(platform)" == "macos" ]]; then
-    if ! window_count="$(determine_dedicated_window_count "$pid" 2>/dev/null)"; then
-      echo "Window count: unavailable"
-      echo "Status: blocker; unable to inspect dedicated-profile Chrome windows"
-      exit 1
-    fi
-
-    echo "Window count: $window_count"
-    if [[ "$window_count" == "0" && "$page_target_count" -gt 0 ]]; then
-      echo "Status: dedicated profile is ready (page-target fallback)"
-      exit 0
-    fi
-    if [[ "$window_count" == "unavailable" ]]; then
-      echo "Status: blocker; unable to inspect dedicated-profile Chrome windows"
-      exit 1
-    fi
-    if [[ "$window_count" =~ ^[0-9]+$ ]] && [[ "$window_count" -gt 1 ]]; then
-      echo "Status: dedicated profile is ready (multiple windows detected)"
-      exit 0
-    fi
-  else
-    echo "Window count: unsupported"
-  fi
-
   echo "Status: dedicated profile is ready"
   exit 0
 fi
 
 if is_endpoint_ready; then
-  echo "Window count: unknown"
   echo "Status: blocker; debug endpoint is not owned by the expected profile"
   exit 1
 fi
 
-echo "Window count: unknown"
 echo "Status: blocker; dedicated profile is not exposing the debug endpoint"
 exit 1

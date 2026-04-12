@@ -208,7 +208,6 @@ wait_for_dedicated_instance() {
   local matching_pids
   local matching_count
   local pid
-  local window_count
 
   for _ in $(seq 1 40); do
     sleep 1
@@ -229,12 +228,6 @@ wait_for_dedicated_instance() {
     fi
 
     pid="$(awk 'NF { print; exit }' <<<"$matching_pids")"
-    if ! window_count="$(determine_dedicated_window_count "$pid" 2>/dev/null)"; then
-      continue
-    fi
-    if [[ "$window_count" == "unavailable" ]]; then
-      continue
-    fi
     echo "$pid"
     return 0
   done
@@ -246,7 +239,6 @@ ensure_endpoint_owned_by_dedicated_profile() {
   local matching_pids
   local matching_count
   local pid
-  local window_count
 
   if ! is_endpoint_ready; then
     return 1
@@ -266,14 +258,6 @@ ensure_endpoint_owned_by_dedicated_profile() {
   fi
 
   pid="$(awk 'NF { print; exit }' <<<"$matching_pids")"
-  if ! window_count="$(determine_dedicated_window_count "$pid")"; then
-    exit 1
-  fi
-  if [[ "$window_count" == "unavailable" ]]; then
-    echo "Unable to inspect Chrome windows for the dedicated profile process ${pid}." >&2
-    exit 1
-  fi
-
   echo "$pid"
   return 0
 }

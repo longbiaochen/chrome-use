@@ -13,9 +13,11 @@ This materializes copied skill directories at:
 - `~/.agents/skills/chrome-inspect`
 - `~/.agents/skills/chrome-auth`
 
-The managed shared runtime is staged under:
+The managed shared runtime and public skill payloads are installed under:
 
-- `~/.chrome-use/dist/runtime/chrome-use`
+- `~/.chrome-use/runtime/chrome-use`
+- `~/.chrome-use/skills/chrome-inspect`
+- `~/.chrome-use/skills/chrome-auth`
 
 Override the target root if your client uses a different neutral skill directory:
 
@@ -64,4 +66,6 @@ For manual login-state preparation or user-created Chrome Web Apps, install the 
 bash scripts/install-agent-profile-chrome-app.sh
 ```
 
+Generic installs do not create the app automatically; use this script or `bash install/install.sh --target generic --install-chrome-app` when you want the Dock entry.
 This adds `Agent Profile Chrome`, which always opens the canonical `agent-profile` runtime so users can prepare auth state and create profile-scoped Web Apps from the same dedicated profile that agents will later inspect and manipulate.
+The app bundle itself lives at `~/Applications/Agent Profile Chrome.app`, not under `~/.chrome-use`.

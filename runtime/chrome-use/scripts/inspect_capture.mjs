@@ -19,6 +19,7 @@ import {
 } from "./inspect_runtime.mjs";
 
 const RUNTIME_IDLE_TIMEOUT_MS = 600000;
+const RUNTIME_READY_TIMEOUT_MS = 10000;
 
 function printUsage() {
   console.error(`Usage:
@@ -302,7 +303,7 @@ function logSignal(event, details = {}) {
   })}\n`);
 }
 
-async function waitForRuntimeReady(store, defaults = {}, predicate = () => true, timeoutMs = 5000) {
+async function waitForRuntimeReady(store, defaults = {}, predicate = () => true, timeoutMs = RUNTIME_READY_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const handle = synthesizeRuntimeHandle(store, defaults);

@@ -128,7 +128,7 @@ bash install/install-agent-skill.sh
 - `~/.codex/skills/chrome-inspect`
 - `~/.codex/skills/chrome-auth`
 
-`chrome-use` 本身不会作为独立 skill 或命令暴露。安装后的共享运行时代码位于 `~/.chrome-use/dist/runtime/chrome-use/`。
+`chrome-use` 本身不会作为独立 skill 或命令暴露。安装后的共享运行时代码位于 `~/.chrome-use/runtime/chrome-use/`，托管的公开 skill 载荷位于 `~/.chrome-use/skills/`。
 
 ## Direct CDP workflows
 
@@ -198,7 +198,8 @@ skills/chrome-auth/scripts/auth-cdp screenshot --output /tmp/auth.png
 - profile 目录：`~/.chrome-use/agent-profile`
 - state 目录：`~/.chrome-use/state`
 - install root：`~/.chrome-use`
-- 托管 dist 根目录：`~/.chrome-use/dist`
+- 托管 runtime 根目录：`~/.chrome-use/runtime/chrome-use`
+- 托管 skills 根目录：`~/.chrome-use/skills`
 - debug URL：`http://127.0.0.1:9223`
 
 运行时契约：
@@ -230,7 +231,9 @@ export CHROME_USE_DEBUG_PORT="9223"
 bash scripts/install-agent-profile-chrome-app.sh
 ```
 
-这会新增 `Agent Profile Chrome` app / Dock item。它始终以 canonical `agent-profile + 9223` 打开 Chrome，供用户手动进入同一个 dedicated profile，再在其中创建自己的 Web App。和后台 agent launcher 不同，这个用户入口会明确把 dedicated-profile Chrome 进程切到前台。
+对于 macOS 上的 Codex 安装，这个 app 现在会由统一安装器默认创建；保留该脚本是为了显式重装，或给非 Codex 安装单独补装。
+这会新增 `Agent Profile Chrome` app / Dock item。它始终以 canonical `agent-profile + 9223` 打开 Chrome，供用户手动进入同一个 dedicated profile，再在其中创建自己的 Web App。和后台 agent launcher 不同，这个用户入口会复用与 `chrome-inspect`、`chrome-auth` 相同的 dedicated profile 与 CDP runtime。
+该 app bundle 会安装到 `~/Applications/Agent Profile Chrome.app`，不会并入 `~/.chrome-use`。
 
 如果你的 Codex 环境已经统一使用自定义专用 profile 路径：
 

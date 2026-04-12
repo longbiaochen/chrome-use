@@ -19,7 +19,7 @@ or:
 bash install/install.sh --target codex
 ```
 
-The unified installer detects Codex, recommends `codex + generic`, and materializes public skills into `~/.codex/skills/` while staging the managed runtime under `~/.chrome-use/dist/`.
+The unified installer detects Codex, recommends `codex + generic`, materializes public skills into `~/.codex/skills/`, installs the managed runtime under `~/.chrome-use/runtime/chrome-use` and managed skill payloads under `~/.chrome-use/skills/`, and on macOS creates `~/Applications/Agent Profile Chrome.app` by default.
 
 This repo intentionally exposes only two explicit commands: `chrome-inspect` and `chrome-auth`.
 `/chrome` and `/inspect` are not registered command selectors.
@@ -57,13 +57,14 @@ CHROME_USE_PROFILE_DIR="$HOME/.chrome-use/agent-profile" \
   skills/chrome-inspect/scripts/inspect-capture begin --project-root "/path/to/repo"
 ```
 
-For manual login-state preparation or user-created Chrome Web Apps, install and use the dedicated launcher:
+For manual login-state preparation or user-created Chrome Web Apps, use the dedicated launcher that Codex installs by default on macOS:
 
 ```bash
 bash scripts/install-agent-profile-chrome-app.sh
 ```
 
-This creates `Agent Profile Chrome`, which always opens the same canonical dedicated profile/debug toolchain that Codex will later reuse for auth and inspect work.
+This creates `Agent Profile Chrome`, which always opens the same canonical dedicated profile/debug toolchain that Codex will later reuse for auth and inspect work. Pass `--skip-chrome-app` if you explicitly want a Codex install without creating the app.
+The app bundle itself lives at `~/Applications/Agent Profile Chrome.app`, not under `~/.chrome-use`.
 
 Recommended verification for public skills:
 

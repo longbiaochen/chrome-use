@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 INSTALL_ROOT="${CHROME_USE_INSTALL_ROOT:-$HOME/.chrome-use}"
 
 CANDIDATES=(
-  "${INSTALL_ROOT}/dist/runtime/chrome-use"
+  "${INSTALL_ROOT}/runtime/chrome-use"
   "$(cd "${SCRIPT_DIR}/../../.." && pwd -P)/runtime/chrome-use"
 )
 

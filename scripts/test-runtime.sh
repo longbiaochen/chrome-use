@@ -85,16 +85,6 @@ exit 0
 EOF
 chmod +x "$MOCK_BIN/nohup"
 
-cat >"$MOCK_BIN/osascript" <<'EOF'
-#!/usr/bin/env bash
-cat >/dev/null
-if [[ -n "${MOCK_OSASCRIPT_FAIL:-}" ]]; then
-  exit 1
-fi
-cat "${MOCK_WINDOW_COUNT_FILE:?}"
-EOF
-chmod +x "$MOCK_BIN/osascript"
-
 cat >"$MOCK_BIN/lsof" <<'EOF'
 #!/usr/bin/env bash
 if [[ -n "${MOCK_LSOF_OUTPUT_FILE:-}" && -s "${MOCK_LSOF_OUTPUT_FILE}" ]]; then
@@ -225,7 +215,6 @@ setup_case() {
   export CHROME_USE_DEBUG_PORT="9223"
   export CHROME_USE_DEBUG_HOST="127.0.0.1"
   export MOCK_PS_FILE="$CASE_DIR/ps.txt"
-  export MOCK_WINDOW_COUNT_FILE="$CASE_DIR/window-count.txt"
   export MOCK_VERSION_COUNT_FILE="$CASE_DIR/version-count.txt"
   export MOCK_OPEN_LOG="$CASE_DIR/open.log"
   export MOCK_NEW_TAB_LOG="$CASE_DIR/new-tab.log"
@@ -235,16 +224,13 @@ setup_case() {
   export MOCK_UNAME="Darwin"
   export MOCK_ENDPOINT_READY_AFTER="1"
   export MOCK_OPEN_PS_CONTENT=""
-  export MOCK_WINDOW_COUNT_AFTER_OPEN="1"
   export MOCK_JSON_LIST_FILE="$CASE_DIR/json-list.json"
   export MOCK_LSOF_OUTPUT_FILE="$CASE_DIR/lsof.txt"
   export MOCK_LSOF_STATUS="1"
   unset MOCK_HTTP_REACHABLE_URL
   unset MOCK_NOHUP_BEHAVIOR
-  unset MOCK_OSASCRIPT_FAIL
 
   : >"$MOCK_PS_FILE"
-  printf '1' >"$MOCK_WINDOW_COUNT_FILE"
   printf '0' >"$MOCK_VERSION_COUNT_FILE"
   printf '[]\n' >"$MOCK_JSON_LIST_FILE"
   : >"$MOCK_LSOF_OUTPUT_FILE"
@@ -355,15 +341,15 @@ EOF
   assert_contains "exactly one owning process" "$ENSURE_STDERR" "multiple process case explains blocker"
 }
 
-test_allows_multiple_dedicated_windows() {
+test_allows_single_owner_with_multiple_page_targets() {
   setup_case
   printf '303 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=%s --remote-debugging-port=9223\n' "$CHROME_USE_PROFILE_DIR" >"$MOCK_PS_FILE"
-  printf '2' >"$MOCK_WINDOW_COUNT_FILE"
+  printf '[{"id":"page-1","type":"page","url":"https://example.com/one"},{"id":"page-2","type":"page","url":"https://example.com/two"}]\n' >"$MOCK_JSON_LIST_FILE"
 
   run_ensure
 
-  assert_eq "0" "$ENSURE_STATUS" "multiple window case exits successfully"
-  assert_eq "http://127.0.0.1:9223" "$ENSURE_STDOUT" "multiple window case returns debug URL"
+  assert_eq "0" "$ENSURE_STATUS" "multiple page target case exits successfully"
+  assert_eq "http://127.0.0.1:9223" "$ENSURE_STDOUT" "multiple page target case returns debug URL"
 }
 
 test_blocks_wrong_endpoint_owner() {
@@ -396,40 +382,40 @@ test_doctor_reports_ready_state() {
   run_doctor
 
   assert_eq "0" "$DOCTOR_STATUS" "doctor ready case exits successfully"
+  assert_contains "Endpoint: ready" "$DOCTOR_STDOUT" "doctor ready case reports endpoint state"
   assert_contains "Matching PID count: 1" "$DOCTOR_STDOUT" "doctor ready case reports matching pid count"
-  assert_contains "Window count: 1" "$DOCTOR_STDOUT" "doctor ready case reports window count"
+  assert_contains "Page target count: 0" "$DOCTOR_STDOUT" "doctor ready case reports page target count"
+  assert_contains "Profile owner command(s): /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=$CHROME_USE_PROFILE_DIR --remote-debugging-port=9223" "$DOCTOR_STDOUT" "doctor ready case reports owner command"
   assert_contains "Status: dedicated profile is ready" "$DOCTOR_STDOUT" "doctor ready case reports success"
 }
 
-test_doctor_reports_multiple_windows_as_ready() {
+test_doctor_reports_multiple_page_targets_as_ready() {
   setup_case
   printf '808 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=%s --remote-debugging-port=9223\n' "$CHROME_USE_PROFILE_DIR" >"$MOCK_PS_FILE"
-  printf '2' >"$MOCK_WINDOW_COUNT_FILE"
+  printf '[{"id":"page-1","type":"page","url":"https://example.com/one"},{"id":"page-2","type":"page","url":"https://example.com/two"}]\n' >"$MOCK_JSON_LIST_FILE"
 
   run_doctor
 
-  assert_eq "0" "$DOCTOR_STATUS" "doctor multiple window case exits successfully"
-  assert_contains "Window count: 2" "$DOCTOR_STDOUT" "doctor multiple window case reports window count"
-  assert_contains "multiple windows detected" "$DOCTOR_STDOUT" "doctor multiple window case reports advisory"
+  assert_eq "0" "$DOCTOR_STATUS" "doctor multiple page target case exits successfully"
+  assert_contains "Page target count: 2" "$DOCTOR_STDOUT" "doctor multiple page target case reports target count"
+  assert_contains "Status: dedicated profile is ready" "$DOCTOR_STDOUT" "doctor multiple page target case reports success"
 }
 
-test_allows_page_target_fallback_when_window_probe_reports_zero() {
+test_reports_page_target_count_without_window_probe() {
   setup_case
   printf '909 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=%s --remote-debugging-port=9223\n' "$CHROME_USE_PROFILE_DIR" >"$MOCK_PS_FILE"
-  printf '0' >"$MOCK_WINDOW_COUNT_FILE"
   printf '[{"id":"page-1","type":"page","url":"http://127.0.0.1:8000/"}]\n' >"$MOCK_JSON_LIST_FILE"
 
   run_ensure "https://example.com/fallback"
 
-  assert_eq "0" "$ENSURE_STATUS" "page-target fallback case exits successfully"
-  assert_file_lines "$MOCK_NEW_TAB_LOG" "1" "page-target fallback case still opens one new tab"
+  assert_eq "0" "$ENSURE_STATUS" "page target diagnostic case exits successfully"
+  assert_file_lines "$MOCK_NEW_TAB_LOG" "1" "page target diagnostic case still opens one new tab"
 
   run_doctor
 
-  assert_eq "0" "$DOCTOR_STATUS" "doctor page-target fallback case exits successfully"
-  assert_contains "Window count: 0" "$DOCTOR_STDOUT" "doctor page-target fallback case reports zero windows"
-  assert_contains "Page target count: 1" "$DOCTOR_STDOUT" "doctor page-target fallback case reports one page target"
-  assert_contains "page-target fallback" "$DOCTOR_STDOUT" "doctor page-target fallback case reports fallback readiness"
+  assert_eq "0" "$DOCTOR_STATUS" "doctor page target diagnostic case exits successfully"
+  assert_contains "Page target count: 1" "$DOCTOR_STDOUT" "doctor page target diagnostic case reports one page target"
+  assert_contains "Status: dedicated profile is ready" "$DOCTOR_STDOUT" "doctor page target diagnostic case reports ready status"
 }
 
 test_ignores_renderer_helpers_for_process_ownership() {
@@ -451,6 +437,7 @@ EOF
   assert_contains "Dedicated PID count: 1" "$DOCTOR_STDOUT" "doctor helper process case reports one owner pid"
   assert_contains "Matching PID count: 1" "$DOCTOR_STDOUT" "doctor helper process case reports one matching pid"
   assert_contains "Profile owner PID(s): 707" "$DOCTOR_STDOUT" "doctor helper process case reports browser root pid"
+  assert_contains "Profile owner command(s): /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=$CHROME_USE_PROFILE_DIR --remote-debugging-port=9223" "$DOCTOR_STDOUT" "doctor helper process case reports owner command"
 }
 
 test_blocks_project_webapp_restart_on_port_conflict() {
@@ -518,13 +505,14 @@ EOF
   assert_contains "runtime/chrome-use/scripts/inspect_capture.mjs begin --project-root /tmp/project" "$node_args" "inspect-capture wrapper delegates to shared runtime"
 }
 
-test_materialized_installed_wrappers_resolve_dist_runtime() {
+test_materialized_installed_wrappers_resolve_install_root_runtime() {
   setup_case
   local mock_node_dir="$CASE_DIR/mock-node"
   local install_root="$CASE_DIR/install-root"
-  local dist_root="$install_root/dist"
+  local runtime_root="$install_root/runtime"
+  local skills_root="$install_root/skills"
   local target_root="$CASE_DIR/target-root"
-  mkdir -p "$mock_node_dir" "$dist_root/runtime" "$dist_root/skills" "$target_root"
+  mkdir -p "$mock_node_dir" "$runtime_root" "$skills_root" "$target_root"
 
   cat >"$mock_node_dir/node" <<'EOF'
 #!/usr/bin/env bash
@@ -535,7 +523,7 @@ exit 0
 EOF
   chmod +x "$mock_node_dir/node"
 
-  cp -R "$RUNTIME_ROOT" "$dist_root/runtime/"
+  cp -R "$RUNTIME_ROOT" "$runtime_root/"
   cp -R "$SKILLS_ROOT/chrome-inspect" "$target_root/"
   cp -R "$SKILLS_ROOT/chrome-auth" "$target_root/"
 
@@ -544,8 +532,8 @@ EOF
   local node_args
   node_args="$(cat "$CASE_DIR/node.log" 2>/dev/null || true)"
 
-  assert_contains "$install_root/dist/runtime/chrome-use/scripts/inspect_capture.mjs begin --project-root /tmp/project" "$node_args" "materialized inspect wrapper resolves install-root runtime"
-  assert_contains "$install_root/dist/runtime/chrome-use/scripts/auth_cdp.mjs" "$node_args" "materialized auth wrapper resolves install-root runtime"
+  assert_contains "$install_root/runtime/chrome-use/scripts/inspect_capture.mjs begin --project-root /tmp/project" "$node_args" "materialized inspect wrapper resolves install-root runtime"
+  assert_contains "$install_root/runtime/chrome-use/scripts/auth_cdp.mjs" "$node_args" "materialized auth wrapper resolves install-root runtime"
 }
 
 test_auth_cdp_wrapper_targets_shared_runtime() {
@@ -732,17 +720,17 @@ main() {
   test_reuses_existing_target_only_when_activation_is_explicit
   test_cleans_stale_profile_process_before_launch
   test_blocks_multiple_dedicated_processes
-  test_allows_multiple_dedicated_windows
+  test_allows_single_owner_with_multiple_page_targets
   test_blocks_wrong_endpoint_owner
   test_allows_other_profiles
   test_doctor_reports_ready_state
-  test_doctor_reports_multiple_windows_as_ready
-  test_allows_page_target_fallback_when_window_probe_reports_zero
+  test_doctor_reports_multiple_page_targets_as_ready
+  test_reports_page_target_count_without_window_probe
   test_ignores_renderer_helpers_for_process_ownership
   test_blocks_project_webapp_restart_on_port_conflict
   test_reuses_reachable_project_webapp_listener
   test_inspect_capture_wrapper_targets_shared_runtime
-  test_materialized_installed_wrappers_resolve_dist_runtime
+  test_materialized_installed_wrappers_resolve_install_root_runtime
   test_auth_cdp_wrapper_targets_shared_runtime
   test_auth_cdp_source_tracks_page_context_and_richer_actions
   test_inspect_capture_latest_reads_persisted_selection_without_runtime

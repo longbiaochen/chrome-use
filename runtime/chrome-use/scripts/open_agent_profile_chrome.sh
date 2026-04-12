@@ -30,27 +30,6 @@ activate_target() {
   curl -fsS "${debug_url}/json/activate/${target_id}" >/dev/null 2>&1 || true
 }
 
-focus_dedicated_process() {
-  local pid="$1"
-  [[ "$(platform)" == "macos" ]] || return 0
-  osascript <<EOF >/dev/null
-tell application "System Events"
-  set targetPid to ${pid}
-  set matchingProcesses to every process whose unix id is targetPid
-  if (count of matchingProcesses) is 0 then
-    error "No foregroundable Chrome process matches PID " & targetPid
-  end if
-  set targetProcess to item 1 of matchingProcesses
-  set frontmost of targetProcess to true
-  repeat with targetWindow in windows of targetProcess
-    try
-      perform action "AXRaise" of targetWindow
-    end try
-  end repeat
-end tell
-EOF
-}
-
 debug_url="$("$SCRIPT_DIR/open_url.sh" "$START_URL")"
 
 matching_pids="$(list_matching_pids || true)"
@@ -60,9 +39,7 @@ if [[ "$matching_count" -ne 1 ]]; then
   exit 1
 fi
 
-pid="$(awk 'NF { print; exit }' <<<"$matching_pids")"
 target_id="$(read_preferred_target_id "$PREFERRED_TARGET_FILE")"
 activate_target "$debug_url" "$target_id"
-focus_dedicated_process "$pid"
 
 echo "$debug_url"
