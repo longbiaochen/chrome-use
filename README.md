@@ -60,7 +60,7 @@ That design matters:
 - auth state is stable and reusable across turns
 - inspect and auth share the same browser session
 - agents can keep a fast, low-overhead connection instead of repeatedly booting new browsers
-- the runtime can route selections and workflow state deterministically by `workflowId` and `captureToken`
+- the runtime can route selections and workflow state deterministically by `workflowId`, `captureToken`, and bound `targetId`
 - user selections stay durable in persisted state instead of disappearing into one-off chat messages
 
 On macOS, the launcher keeps the dedicated Chrome instance in the background so agent activity does not steal focus. The dedicated `agent-profile` must remain a single-window Chrome instance; other Chrome windows under other profiles are allowed.
@@ -132,6 +132,8 @@ skills/chrome-inspect/scripts/inspect-capture begin --project-root "/path/to/rep
 skills/chrome-inspect/scripts/inspect-capture await --workflow-id "<workflowId>"
 ```
 
+`inspect-capture begin` returns both `workflowId` and the bound `targetId`, so later `await` and `apply` calls stay pinned to the same tab even when other agent threads are attached to the same debug endpoint.
+
 or the one-shot helper:
 
 ```bash
@@ -144,10 +146,13 @@ skills/chrome-inspect/scripts/inspect_select_element.sh "/path/to/repo"
 bash skills/chrome-auth/scripts/open_url.sh "https://example.com/login"
 skills/chrome-auth/scripts/auth-cdp status
 skills/chrome-auth/scripts/auth-cdp list-pages
+skills/chrome-auth/scripts/auth-cdp bind-page --page-id "<page-id>"
 skills/chrome-auth/scripts/auth-cdp select-page --page-id "<page-id>"
-skills/chrome-auth/scripts/auth-cdp snapshot --mode a11y
+skills/chrome-auth/scripts/auth-cdp snapshot --mode a11y --binding-id "<binding-id>"
 skills/chrome-auth/scripts/auth-cdp screenshot --output /tmp/auth.png
 ```
+
+For concurrency-safe auth automation, prefer `bind-page` once and then pass `--binding-id` on every DOM action instead of relying on the endpoint-wide stored selected page.
 
 ## Client support
 
@@ -221,7 +226,8 @@ For `/chrome-inspect` default flow, send:
 1. Run `/chrome-inspect` in chat.
 2. Let `scripts/open_url.sh` open Chrome and auto-start the local project web app first when `CHROME_INSPECT_PROJECT_ROOT` is configured or the current repo can be inferred as the local project.
    If the dedicated profile is already running, the command reuses it by opening a new tab there instead of creating another dedicated window.
-3. Start capture with `scripts/inspect-capture begin --project-root "<repo>"` and store the returned `workflowId`.
+   Reusing an existing matching target no longer activates that tab by default; set `CHROME_USE_ACTIVATE_EXISTING_TARGET=1` only for explicit operator-facing flows that must bring it to the front.
+3. Start capture with `scripts/inspect-capture begin --project-root "<repo>"` and store the returned `workflowId` and `targetId`.
 4. Confirm inspect mode is armed, then click the target element in Chrome.
    The page panel should already be injected in the idle ready state on entry, with the primary action labeled `Press this button to inspect`.
    After the operator clicks that button, inspect mode should become active and the button should read `Inspecting`.

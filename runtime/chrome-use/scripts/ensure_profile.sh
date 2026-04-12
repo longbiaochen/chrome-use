@@ -162,6 +162,10 @@ activate_existing_target() {
   return 0
 }
 
+should_activate_existing_target() {
+  [[ "${CHROME_USE_ACTIVATE_EXISTING_TARGET:-0}" == "1" ]]
+}
+
 record_preferred_target_for_url() {
   local target_url="$1"
   local payload
@@ -275,7 +279,9 @@ fi
 if ensure_endpoint_owned_by_dedicated_profile >/dev/null; then
   existing_target_id="$(find_matching_target_for_url "$START_URL")"
   if [[ -n "${existing_target_id:-}" ]]; then
-    activate_existing_target "$existing_target_id" || true
+    if should_activate_existing_target; then
+      activate_existing_target "$existing_target_id" || true
+    fi
     close_duplicate_targets_for_url "$START_URL" "$existing_target_id"
   else
     open_tab_on_dedicated_instance "$START_URL"

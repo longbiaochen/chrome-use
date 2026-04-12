@@ -133,6 +133,14 @@ if [[ "$last_arg" == *"/json/new?"* ]]; then
   exit 0
 fi
 
+if [[ "$last_arg" == *"/json/activate/"* ]]; then
+  if [[ -n "${MOCK_ACTIVATE_LOG:-}" ]]; then
+    printf '%s\n' "$last_arg" >>"$MOCK_ACTIVATE_LOG"
+  fi
+  printf '{}\n'
+  exit 0
+fi
+
 if [[ "$last_arg" == *"/json/list" ]]; then
   if [[ -n "${MOCK_JSON_LIST_FILE:-}" && -f "${MOCK_JSON_LIST_FILE}" ]]; then
     cat "${MOCK_JSON_LIST_FILE}"
@@ -221,6 +229,7 @@ setup_case() {
   export MOCK_VERSION_COUNT_FILE="$CASE_DIR/version-count.txt"
   export MOCK_OPEN_LOG="$CASE_DIR/open.log"
   export MOCK_NEW_TAB_LOG="$CASE_DIR/new-tab.log"
+  export MOCK_ACTIVATE_LOG="$CASE_DIR/activate.log"
   export MOCK_KILL_LOG="$CASE_DIR/kill.log"
   export MOCK_NOHUP_LOG="$CASE_DIR/nohup.log"
   export MOCK_UNAME="Darwin"
@@ -301,7 +310,24 @@ test_reuses_running_instance_with_new_tab() {
   assert_eq "http://127.0.0.1:9223" "$ENSURE_STDOUT" "reuse case returns debug URL"
   assert_file_lines "$MOCK_OPEN_LOG" "0" "reuse case does not relaunch Chrome"
   assert_file_lines "$MOCK_NEW_TAB_LOG" "1" "reuse case opens one new tab"
+  assert_file_lines "$MOCK_ACTIVATE_LOG" "0" "reuse case does not activate an existing tab by default"
   assert_contains "/json/new?https%3A%2F%2Fexample.com%2Fpath%3Fq%3D1" "$(cat "$MOCK_NEW_TAB_LOG" 2>/dev/null || true)" "reuse case encodes tab URL"
+}
+
+test_reuses_existing_target_only_when_activation_is_explicit() {
+  setup_case
+  export CHROME_USE_ACTIVATE_EXISTING_TARGET="1"
+  printf '456 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=%s --remote-debugging-port=9223 about:blank\n' "$CHROME_USE_PROFILE_DIR" >"$MOCK_PS_FILE"
+  cat >"$MOCK_JSON_LIST_FILE" <<'EOF'
+[{"id":"existing-tab","type":"page","url":"https://example.com/path?q=1"}]
+EOF
+
+  run_ensure "https://example.com/path?q=1"
+
+  assert_eq "0" "$ENSURE_STATUS" "explicit activation reuse case exits successfully"
+  assert_file_lines "$MOCK_NEW_TAB_LOG" "0" "explicit activation reuse case does not open a new tab when the target already exists"
+  assert_file_lines "$MOCK_ACTIVATE_LOG" "1" "explicit activation reuse case activates the matching target"
+  assert_contains "/json/activate/existing-tab" "$(cat "$MOCK_ACTIVATE_LOG" 2>/dev/null || true)" "explicit activation reuse case targets the matching tab"
 }
 
 test_cleans_stale_profile_process_before_launch() {
@@ -517,6 +543,7 @@ test_auth_cdp_source_tracks_page_context_and_richer_actions() {
   auth_source="$(cat "$RUNTIME_ROOT/scripts/auth_cdp.mjs")"
 
   assert_contains 'auth-cdp list-pages' "$auth_source" "auth-cdp usage exposes list-pages"
+  assert_contains 'auth-cdp bind-page --page-id <id>' "$auth_source" "auth-cdp usage exposes bind-page"
   assert_contains 'auth-cdp select-page --page-id <id>' "$auth_source" "auth-cdp usage exposes select-page"
   assert_contains 'auth-cdp wait-for --text <value>' "$auth_source" "auth-cdp usage exposes wait-for"
   assert_contains 'auth-cdp hover --selector <css>' "$auth_source" "auth-cdp usage exposes hover"
@@ -525,6 +552,8 @@ test_auth_cdp_source_tracks_page_context_and_richer_actions() {
   assert_contains 'auth-cdp screenshot [--selector <css>]' "$auth_source" "auth-cdp usage exposes screenshot"
   assert_contains 'auth-cdp snapshot [--mode dom|a11y]' "$auth_source" "auth-cdp usage exposes snapshot modes"
   assert_contains 'getSelectedPagePath' "$auth_source" "auth-cdp persists selected page state"
+  assert_contains 'getBindingPath' "$auth_source" "auth-cdp persists explicit page bindings"
+  assert_contains 'bindingId' "$auth_source" "auth-cdp exposes binding ids for concurrency-safe tab routing"
   assert_contains 'resolvePageState' "$auth_source" "auth-cdp resolves selected page from browser state"
   assert_contains 'pages[pages.length - 1]' "$auth_source" "auth-cdp falls back to latest page instead of the first page"
   assert_contains 'Accessibility.getFullAXTree' "$auth_source" "auth-cdp uses accessibility tree snapshots"
@@ -605,6 +634,10 @@ test_inspect_runtime_source_tracks_navigation_rearm() {
   assert_contains "selection-history.jsonl" "$runtime_source" "inspect runtime persists selection history as JSONL"
   assert_contains "\"get_latest_selection\"" "$runtime_source" "inspect runtime exposes latest persisted selection recovery"
   assert_contains "readLatestPersistedSelection" "$runtime_source" "inspect runtime reads latest persisted selection outside workflow state"
+  assert_contains "activeWorkflowByTargetId" "$runtime_source" "inspect runtime tracks active workflows per target"
+  assert_contains "activeTargetIdByWorkflowId" "$runtime_source" "inspect runtime tracks target bindings per workflow"
+  assert_contains "resolveWorkflowTargetId" "$runtime_source" "inspect runtime resolves a bound target for each workflow"
+  assert_contains "Bound target missing" "$runtime_source" "inspect runtime errors when a bound target disappears"
 }
 
 test_inspect_capture_await_prefers_daemon_wait() {
@@ -666,6 +699,7 @@ test_auth_visual_assets_exist() {
 main() {
   test_launches_dedicated_instance
   test_reuses_running_instance_with_new_tab
+  test_reuses_existing_target_only_when_activation_is_explicit
   test_cleans_stale_profile_process_before_launch
   test_blocks_multiple_dedicated_processes
   test_blocks_multiple_dedicated_windows

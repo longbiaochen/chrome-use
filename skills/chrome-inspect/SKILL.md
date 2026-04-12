@@ -21,8 +21,10 @@ Command entrypoints live in this skill's own `scripts/` directory. Resolve the d
 3. Start local docs web server (for local docs URLs) before opening Chrome when documented. The command wrapper should do this automatically for the detected project webapp entry.
 4. Start or reuse Chrome with the resolved URL through `bash "<skill-dir>/scripts/open_url.sh" "<resolved_url>"`.
    Reuse must open a new tab on the running dedicated-profile instance instead of creating a second dedicated window.
+   Reusing an existing matching target does not activate that tab by default; only set `CHROME_USE_ACTIVATE_EXISTING_TARGET=1` for explicit operator-facing flows that must bring it forward.
 5. Use the direct-CDP inspect CLI for selection capture by default:
    - `"<skill-dir>/scripts/inspect-capture" begin --project-root "<repo>"`
+     Store both `workflowId` and the returned `targetId`; the workflow is now pinned to that target instead of following a global active tab.
    - `"<skill-dir>/scripts/inspect-capture" await --workflow-id "<workflowId>"`
    - `"<skill-dir>/scripts/inspect-capture" latest` when a later turn asks for the most recent saved selection
      This is a local fast path: read the persisted latest selection directly and skip browser attach, startup URL resolution, repo lookup, and any extra search flow.

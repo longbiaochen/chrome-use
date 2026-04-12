@@ -33,6 +33,7 @@
 - In idle or saved-selection state, a single `Press this button to inspect` click should immediately re-enter inspect mode even before starting a new capture workflow.
 - Persist selection trail in `events/selection-history.jsonl` in addition to `events/current-selection.json`.
 - Preferred client flow is `scripts/inspect-capture begin ...` followed by `scripts/inspect-capture await ...` in the same turn; use immediate-return fallback only when long-running tool waits are not viable.
+- For `/chrome-auth`, prefer the page-aware `auth-cdp` flow: `list-pages` -> `select-page` -> `snapshot --mode dom|a11y`, then interact with `wait-for`, `fill`, `hover`, `press-key`, and `screenshot` in the same dedicated session.
 - On macOS, open or reuse the dedicated Chrome profile in the background so MCP startup does not steal user focus.
 - Use repository checks when touching runtime/packaging behavior: `bash scripts/verify-manifest.sh` and `bash scripts/test-runtime.sh`.
 - For inspect-toolbar behavior changes, also run `node runtime/chrome-use/scripts/inspect_visual_loop.mjs`.

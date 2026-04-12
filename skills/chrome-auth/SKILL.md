@@ -21,18 +21,19 @@ Command entrypoints live in this skill's own `scripts/` directory. Resolve the d
 4. Use the direct CDP auth helper for operator-guided navigation, page selection, structured snapshots, and DOM interaction:
    - `"<skill-dir>/scripts/auth-cdp" status`
    - `"<skill-dir>/scripts/auth-cdp" list-pages`
+   - `"<skill-dir>/scripts/auth-cdp" bind-page --page-id "<id>"`
    - `"<skill-dir>/scripts/auth-cdp" select-page --page-id "<id>"`
-   - `"<skill-dir>/scripts/auth-cdp" navigate --url "<url>"`
-   - `"<skill-dir>/scripts/auth-cdp" wait-for --text "<visible text>"`
-   - `"<skill-dir>/scripts/auth-cdp" snapshot --mode dom`
-   - `"<skill-dir>/scripts/auth-cdp" snapshot --mode a11y`
-   - `"<skill-dir>/scripts/auth-cdp" screenshot --output /tmp/auth.png`
-   - `"<skill-dir>/scripts/auth-cdp" find --selector "<css>"`
-   - `"<skill-dir>/scripts/auth-cdp" hover --selector "<css>"`
-   - `"<skill-dir>/scripts/auth-cdp" click --selector "<css>"`
-   - `"<skill-dir>/scripts/auth-cdp" fill --selector "<css>" --text "<text>"`
-   - `"<skill-dir>/scripts/auth-cdp" type --selector "<css>" --text "<text>"`
-   - `"<skill-dir>/scripts/auth-cdp" press-key --key "Enter"`
+   - `"<skill-dir>/scripts/auth-cdp" navigate --url "<url>" --binding-id "<binding-id>"`
+   - `"<skill-dir>/scripts/auth-cdp" wait-for --text "<visible text>" --binding-id "<binding-id>"`
+   - `"<skill-dir>/scripts/auth-cdp" snapshot --mode dom --binding-id "<binding-id>"`
+   - `"<skill-dir>/scripts/auth-cdp" snapshot --mode a11y --binding-id "<binding-id>"`
+   - `"<skill-dir>/scripts/auth-cdp" screenshot --output /tmp/auth.png --binding-id "<binding-id>"`
+   - `"<skill-dir>/scripts/auth-cdp" find --selector "<css>" --binding-id "<binding-id>"`
+   - `"<skill-dir>/scripts/auth-cdp" hover --selector "<css>" --binding-id "<binding-id>"`
+   - `"<skill-dir>/scripts/auth-cdp" click --selector "<css>" --binding-id "<binding-id>"`
+   - `"<skill-dir>/scripts/auth-cdp" fill --selector "<css>" --text "<text>" --binding-id "<binding-id>"`
+   - `"<skill-dir>/scripts/auth-cdp" type --selector "<css>" --text "<text>" --binding-id "<binding-id>"`
+   - `"<skill-dir>/scripts/auth-cdp" press-key --key "Enter" --binding-id "<binding-id>"`
 5. Do not automate credentials directly; keep auth operations operator-driven and tool-guided.
 
 ## Tools
@@ -46,5 +47,6 @@ Runs direct CDP commands against the dedicated Chrome debug endpoint for page-aw
 ## Notes
 
 - Keep authentication context in the same Chrome profile across steps so cookies/storage are preserved.
+- In multi-tab or multi-agent flows, prefer `bind-page` once and then keep using `--binding-id` so later DOM commands stay pinned to the same tab instead of inheriting endpoint-wide selected-page state.
 - Other Chrome windows may exist under other profiles, but the dedicated `agent-profile` must remain a single-window instance.
 - Shared runtime helpers live under `runtime/chrome-use/` in this repository; this skill only exposes the public auth workflow entrypoints.

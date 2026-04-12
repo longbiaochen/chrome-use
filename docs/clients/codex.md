@@ -55,9 +55,10 @@ Recommended verification for public skills:
 3. Send `/chrome-inspect` in chat.
 4. Chrome session is opened through the installed skill's `scripts/open_url.sh` with the resolved startup URL, and the local project web app is auto-started first when `CHROME_INSPECT_PROJECT_ROOT` is configured or the current repo can be inferred as the local project.
    Reuse keeps the dedicated `agent-profile` on a single Chrome window and opens a new tab on that running instance.
+   Reusing an existing matching target no longer activates that tab by default; set `CHROME_USE_ACTIVATE_EXISTING_TARGET=1` only for explicit operator-facing flows that must bring it forward.
    If the expected preview port is already listening but the target URL is still unreachable, the runtime should stop immediately with a listener-blocker error instead of starting another server.
 5. The runtime should prioritize the freshly opened target instead of attaching unrelated tabs.
-6. The client calls `~/.codex/skills/chrome-inspect/scripts/inspect-capture begin --project-root "<repo>"` and stores `workflowId`.
+6. The client calls `~/.codex/skills/chrome-inspect/scripts/inspect-capture begin --project-root "<repo>"` and stores `workflowId` plus the returned `targetId`.
 7. In Chrome, use the persistent page toolbar to enter inspect mode, then click the target element only after inspect mode is armed.
 8. The client calls `~/.codex/skills/chrome-inspect/scripts/inspect-capture await --workflow-id "<workflowId>"`.
 9. Treat the result as valid only if it belongs to the current `workflowId` and follows a fresh click for the current capture cycle.
@@ -74,4 +75,4 @@ Recommended verification for public skills:
 13. Reply with a concrete edit instruction.
 14. Confirm returned `phase=ready_to_apply` after `~/.codex/skills/chrome-inspect/scripts/inspect-capture apply --workflow-id "<workflowId>" --instruction "<user instruction>"`.
 
-For `/chrome-auth`, send the explicit auth URL and then use `~/.codex/skills/chrome-auth/scripts/auth-cdp` for login/authorization actions while keeping the same dedicated profile, debug endpoint, and single dedicated Chrome window. Prefer `list-pages` and `select-page` before interaction when more than one tab is open, and use `snapshot --mode dom|a11y`, `screenshot`, `wait-for`, `fill`, `hover`, and `press-key` instead of falling back to screenshot-only flows.
+For `/chrome-auth`, send the explicit auth URL and then use `~/.codex/skills/chrome-auth/scripts/auth-cdp` for login/authorization actions while keeping the same dedicated profile, debug endpoint, and single dedicated Chrome window. Prefer `list-pages` plus `bind-page --page-id "<id>"` when more than one tab is open, then keep passing `--binding-id "<binding-id>"` so every DOM action stays pinned to that tab instead of inheriting an endpoint-wide selected page.

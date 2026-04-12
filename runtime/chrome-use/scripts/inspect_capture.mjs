@@ -94,6 +94,10 @@ function readLatestPersistedSelection(store) {
   return readLatestSelectionHistoryEntry(store);
 }
 
+function readPreferredTarget(store) {
+  return readJsonIfPresent(store.preferredTargetPath);
+}
+
 function summarizePersistedSelection(selection) {
   const payload = selection?.payload;
   if (!payload?.selectedElement) {
@@ -619,10 +623,14 @@ async function main() {
   });
 
   if (command === "begin") {
+    const preferredTarget = readPreferredTarget(store);
     const handle = await ensureRuntimeServer({ scriptPath, store, debugUrl, startupUrl });
-    const result = await sendRuntimeCommand(handle, "begin_capture", {});
+    const result = await sendRuntimeCommand(handle, "begin_capture", {
+      targetId: preferredTarget?.targetId || null,
+    });
     process.stdout.write(`${JSON.stringify({
       workflowId: result.workflowId,
+      targetId: result.targetId || preferredTarget?.targetId || null,
       status: result.status,
       phase: result.phase,
       url: startupUrl || null,
@@ -695,7 +703,10 @@ async function main() {
   const runtime = await connectInspectRuntime({ debugUrl, startupUrl });
   try {
     const { cdp, state } = runtime;
-    const begin = await handleInspectAction(cdp, state, { action: "begin_capture" }, 4);
+    const begin = await handleInspectAction(cdp, state, {
+      action: "begin_capture",
+      targetId: readPreferredTarget(store)?.targetId || null,
+    }, 4);
     console.error(
       `Inspect armed for ${startupUrl || "the current page"}. Click an element in dedicated Chrome, then wait for JSON output.`,
     );

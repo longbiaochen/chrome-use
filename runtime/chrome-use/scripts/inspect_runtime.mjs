@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { execFile as execFileCallback } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
@@ -13,6 +14,8 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 const DEFAULT_WAIT_MS = 5000;
 const DEFAULT_TIMEOUT_MS = 10000;
@@ -23,6 +26,7 @@ const DEFAULT_TRUNCATE = 400;
 const CDP_METHOD_NOT_FOUND_CODE = -32601;
 const BRIDGE_OWNER_VERSION = 1;
 const PAGE_TOOLBAR_STATE_SIGNAL_PREFIX = "__chromeInspectToolbarState:";
+const execFile = promisify(execFileCallback);
 
 function parseNumber(value, fallback) {
   const parsed = Number(value);
@@ -549,11 +553,105 @@ export function getDefaultDebugUrl() {
   return `http://${host}:${port}`;
 }
 
+export async function assertDedicatedBrowserOwnership(debugUrl = getDefaultDebugUrl()) {
+  const parsed = new URL(debugUrl);
+  const doctorScript = fileURLToPath(new URL("./doctor.sh", import.meta.url));
+  const env = {
+    ...process.env,
+    CHROME_USE_DEBUG_HOST: parsed.hostname,
+    CHROME_USE_DEBUG_PORT: parsed.port || (parsed.protocol === "https:" ? "443" : "80"),
+  };
+
+  try {
+    await execFile("bash", [doctorScript], { env });
+  } catch (error) {
+    const output = `${error.stdout || ""}${error.stderr || ""}`.trim();
+    const message = output || error.message || "Dedicated profile ownership check failed.";
+    throw new Error(`Refusing to attach to ${debugUrl}: ${message}`);
+  }
+}
+
 async function initializeStoreState(store, state) {
   await ensureInspectStore(store);
   const session = (await readJsonIfPresent(store.sessionPath)) || {};
   state.storeSequence = Number.isFinite(Number(session.sequence)) ? Number(session.sequence) : 0;
-  state.activeWorkflowId = typeof session.activeWorkflowId === "string" ? session.activeWorkflowId : null;
+  const activeWorkflows = Array.isArray(session.activeWorkflows)
+    ? session.activeWorkflows
+    : (typeof session.activeWorkflowId === "string" && session.activeWorkflowId
+        ? [{ workflowId: session.activeWorkflowId, targetId: null }]
+        : []);
+  for (const workflow of activeWorkflows) {
+    if (!workflow || typeof workflow.workflowId !== "string" || !workflow.workflowId) {
+      continue;
+    }
+    const targetId = typeof workflow.targetId === "string" && workflow.targetId ? workflow.targetId : null;
+    state.activeTargetIdByWorkflowId.set(workflow.workflowId, targetId);
+    if (targetId) {
+      state.activeWorkflowByTargetId.set(targetId, workflow.workflowId);
+    }
+  }
+  state.activeWorkflowId = getDefaultActiveWorkflowId(state);
+}
+
+function getActiveWorkflowIdEntries(state) {
+  return [...state.activeTargetIdByWorkflowId.entries()].map(([workflowId, targetId]) => ({
+    workflowId,
+    targetId: targetId || null,
+  }));
+}
+
+function getDefaultActiveWorkflowId(state) {
+  if (!state?.activeTargetIdByWorkflowId || state.activeTargetIdByWorkflowId.size !== 1) {
+    return null;
+  }
+  return state.activeTargetIdByWorkflowId.keys().next().value || null;
+}
+
+function refreshDefaultActiveWorkflowId(state) {
+  state.activeWorkflowId = getDefaultActiveWorkflowId(state);
+  return state.activeWorkflowId;
+}
+
+function getActiveTargetIdForWorkflow(state, workflowId) {
+  if (!workflowId) {
+    return null;
+  }
+  return state.activeTargetIdByWorkflowId.get(workflowId) || null;
+}
+
+function getActiveWorkflowIdForTarget(state, targetId) {
+  if (!targetId) {
+    return null;
+  }
+  return state.activeWorkflowByTargetId.get(targetId) || null;
+}
+
+function bindWorkflowToTarget(state, workflowId, targetId) {
+  if (!workflowId) {
+    return null;
+  }
+  const previousTargetId = state.activeTargetIdByWorkflowId.get(workflowId) || null;
+  if (previousTargetId && previousTargetId !== targetId) {
+    state.activeWorkflowByTargetId.delete(previousTargetId);
+  }
+  state.activeTargetIdByWorkflowId.set(workflowId, targetId || null);
+  if (targetId) {
+    state.activeWorkflowByTargetId.set(targetId, workflowId);
+  }
+  refreshDefaultActiveWorkflowId(state);
+  return targetId || null;
+}
+
+function unbindWorkflow(state, workflowId) {
+  if (!workflowId) {
+    return;
+  }
+  const targetId = state.activeTargetIdByWorkflowId.get(workflowId) || null;
+  state.activeTargetIdByWorkflowId.delete(workflowId);
+  if (targetId && state.activeWorkflowByTargetId.get(targetId) === workflowId) {
+    state.activeWorkflowByTargetId.delete(targetId);
+  }
+  refreshDefaultActiveWorkflowId(state);
 }
 
 function isPidAlive(pid) {
@@ -714,18 +812,18 @@ function isWorkflowCaptureInProgress(workflow) {
 }
 
 export async function restoreActiveWorkflowState(store, state, owner = null) {
-  if (!state.activeWorkflowId) {
-    return null;
-  }
-
-  const workflow = await readWorkflow(store, state.activeWorkflowId);
   const ownerValid = !!owner && owner.pid === process.pid;
-  if (isWorkflowCaptureInProgress(workflow) && ownerValid) {
-    return workflow;
+  const restored = [];
+  for (const { workflowId, targetId } of getActiveWorkflowIdEntries(state)) {
+    const workflow = await readWorkflow(store, workflowId);
+    if (isWorkflowCaptureInProgress(workflow) && ownerValid) {
+      bindWorkflowToTarget(state, workflowId, workflow?.targetId || targetId || null);
+      restored.push(workflow);
+      continue;
+    }
+    unbindWorkflow(state, workflowId);
   }
-
-  state.activeWorkflowId = null;
-  return workflow;
+  return restored;
 }
 
 async function nextSequence(state) {
@@ -737,10 +835,12 @@ async function persistSessionState(store, state, patch = {}) {
   const previous = (await readJsonIfPresent(store.sessionPath)) || {};
   const sequence = await nextSequence(state);
   const currentOwner = state.bridgeOwner || (await readBridgeOwner(store));
+  const activeWorkflows = getActiveWorkflowIdEntries(state);
   const session = {
     sequence,
     updatedAt: new Date().toISOString(),
     activeWorkflowId: state.activeWorkflowId || null,
+    activeWorkflows,
     status: patch.status || previous.status || "bridge_ready",
     lastError: patch.error || previous.lastError || null,
     startupUrl:
@@ -874,18 +974,20 @@ async function finalizeWorkflowSelection(cdp, state, workflow, payload, targetId
     selectionSource: payload.selectionSource || "overlay_event",
   });
 
-  state.activeWorkflowId = null;
-  await applyToolbarStateToAllTargets(cdp, state, {
-    workflowId: finalized.workflowId,
-    captureToken: finalized.captureToken || payload.captureToken || null,
-    mode: "idle_selected",
-    cancelled: false,
-    captureActive: false,
-    selectedDetails: buildToolbarSelectionDetails(payload),
-    collapsed: false,
-    reason: "selection_recorded",
-  });
-  await persistSessionState(state.store, state, { status: "bridge_ready" });
+  unbindWorkflow(state, finalized.workflowId);
+  if (targetId) {
+    await applyToolbarStateForTarget(cdp, state, targetId, {
+      workflowId: finalized.workflowId,
+      captureToken: finalized.captureToken || payload.captureToken || null,
+      mode: "idle_selected",
+      cancelled: false,
+      captureActive: false,
+      selectedDetails: buildToolbarSelectionDetails(payload),
+      collapsed: false,
+      reason: "selection_recorded",
+    });
+  }
+  await persistSessionState(state.store, state, { status: hasActiveWorkflows(state) ? "waiting_for_selection" : "bridge_ready" });
 
   return { currentSelection, workflow: finalized };
 }
@@ -2017,38 +2119,30 @@ export async function reflectSelectionOnPage(cdp, sessionState, workflowId, payl
 
 async function armPageSelectionCapture(cdp, state, workflow) {
   const workflowId = workflow.workflowId;
-  state.inspectTargetId = selectInspectTargetId(state);
-  const targetIds = [...state.targetsById.keys()];
-  let armedAt = null;
-  for (const targetId of targetIds) {
-    try {
-      const isInspectTarget = targetId === state.inspectTargetId;
-      const meta = isInspectTarget
-        ? await armCaptureForTarget(cdp, state, targetId, {
-            workflowId,
-            captureToken: workflow.captureToken,
-            mode: "idle",
-            cancelled: false,
-            collapsed: true,
-            reason: "workflow_begin",
-          })
-        : await applyToolbarStateForTarget(cdp, state, targetId, {
-            workflowId: null,
-            captureToken: null,
-            mode: "idle",
-            cancelled: false,
-            captureActive: false,
-            selectedDetails: null,
-            collapsed: true,
-            reason: "workflow_begin_idle",
-          });
-      armedAt = meta?.armedAt || armedAt;
-    } catch (err) {
-      state.lastObservedError = `page capture arm failed for ${targetId}: ${err?.message || err}`;
-      logSignal("page_capture_arm_error", { workflowId, targetId, error: state.lastObservedError });
-    }
+  const targetId = workflow.targetId || getActiveTargetIdForWorkflow(state, workflowId);
+  if (!targetId) {
+    throw new Error(`Inspect workflow ${workflowId} does not have a bound target.`);
   }
-  return armedAt;
+  const existingWorkflowId = getActiveWorkflowIdForTarget(state, targetId);
+  if (existingWorkflowId && existingWorkflowId !== workflowId) {
+    throw new Error(`Target ${targetId} is already controlled by inspect workflow ${existingWorkflowId}.`);
+  }
+  state.inspectTargetId = targetId;
+  try {
+    const meta = await armCaptureForTarget(cdp, state, targetId, {
+      workflowId,
+      captureToken: workflow.captureToken,
+      mode: "idle",
+      cancelled: false,
+      collapsed: true,
+      reason: "workflow_begin",
+    });
+    return meta?.armedAt || null;
+  } catch (err) {
+    state.lastObservedError = `page capture arm failed for ${targetId}: ${err?.message || err}`;
+    logSignal("page_capture_arm_error", { workflowId, targetId, error: state.lastObservedError });
+    throw err;
+  }
 }
 
 async function resolveSelectionByPageClick(cdp, state, sessionState, pageInfo, workflow) {
@@ -2344,9 +2438,11 @@ function isSelectionEventFreshForWorkflow(selection, workflow) {
 }
 
 function getSelectionCandidateTargetIds(state, workflow = null) {
+  if (workflow?.targetId && state.targetsById.has(workflow.targetId)) {
+    return [workflow.targetId];
+  }
   const candidates = [
     state.lastSelectionEvent?.targetId || null,
-    workflow?.targetId || null,
     state.inspectTargetId || null,
     state.preferredTargetId || null,
   ].filter((targetId) => targetId && state.targetsById.has(targetId));
@@ -2379,7 +2475,7 @@ async function resolveLiveSelectionIfFresh(state, cdp, workflow) {
 }
 
 async function resolveLatestSelection(state, cdp, waitForSelectionMs, timeoutMs, workflow = null) {
-  const workflowId = workflow?.workflowId || state.activeWorkflowId;
+  const workflowId = workflow?.workflowId || getDefaultActiveWorkflowId(state);
   const currentSelection = await readJsonIfPresent(state.store.currentSelectionPath);
   if (isSelectionFreshForWorkflow(currentSelection, workflow)) {
     return currentSelection.payload;
@@ -2446,13 +2542,14 @@ async function tryResolveLatestSelection(state, cdp, waitForSelectionMs, timeout
   }
 }
 
-async function createCaptureWorkflow(state) {
+async function createCaptureWorkflow(state, targetId) {
   const workflowId = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
-  state.activeWorkflowId = workflowId;
+  bindWorkflowToTarget(state, workflowId, targetId || null);
   const createdAt = timingNow();
   const workflow = await persistWorkflowState(state.store, state, workflowId, {
     status: "waiting_for_selection",
     phase: "waiting_for_selection",
+    targetId: targetId || null,
     captureToken: randomUUID(),
     metrics: {
       workflowCreatedAt: createdAt,
@@ -2461,7 +2558,7 @@ async function createCaptureWorkflow(state) {
     },
   });
   await persistSessionState(state.store, state, { status: "waiting_for_selection" });
-  logSignal("workflow_created", { workflowId, sequence: workflow.sequence });
+  logSignal("workflow_created", { workflowId, targetId: targetId || null, sequence: workflow.sequence });
   return workflow;
 }
 
@@ -2515,6 +2612,7 @@ async function awaitWorkflowSelection(state, cdp, workflowId, waitForSelectionMs
   if (!workflow) {
     throw new Error(`Unknown inspect workflow: ${workflowId}`);
   }
+  bindWorkflowToTarget(state, workflowId, workflow.targetId || getActiveTargetIdForWorkflow(state, workflowId) || null);
   if (isSelectionReady(workflow) && workflow.payload && isSelectionFreshForWorkflow({
     workflowId: workflow.workflowId,
     payload: workflow.payload,
@@ -2557,6 +2655,14 @@ async function awaitWorkflowSelection(state, cdp, workflowId, waitForSelectionMs
     });
 
     workflow = observed || (await readWorkflow(state.store, workflowId));
+    if (workflow?.targetId && !state.targetsById.has(workflow.targetId)) {
+      workflow = await persistWorkflowState(state.store, state, workflowId, {
+        status: "error",
+        phase: "error",
+        error: `Bound target missing: ${workflow.targetId}. Re-open the page and start capture again.`,
+      });
+      unbindWorkflow(state, workflowId);
+    }
     if (isSelectionReady(workflow) && workflow?.payload && isSelectionFreshForWorkflow({
       workflowId: workflow.workflowId,
       payload: workflow.payload,
@@ -2572,20 +2678,20 @@ async function awaitWorkflowSelection(state, cdp, workflowId, waitForSelectionMs
         summary: workflow.summary || inspectSummary(workflow.payload),
         selectionSource: workflow.selectionSource || workflow.payload.selectionSource || null,
       });
-      if (state.activeWorkflowId === workflowId) {
-        state.activeWorkflowId = null;
+      unbindWorkflow(state, workflowId);
+      if (workflow.targetId) {
+        await applyToolbarStateForTarget(cdp, state, workflow.targetId, {
+          workflowId,
+          captureToken: finalized.captureToken || finalized.payload?.captureToken || null,
+          mode: "idle_selected",
+          cancelled: false,
+          captureActive: false,
+          selectedDetails: buildToolbarSelectionDetails(finalized.payload),
+          collapsed: false,
+          reason: "await_selection_ready",
+        });
       }
-      await applyToolbarStateToAllTargets(cdp, state, {
-        workflowId,
-        captureToken: finalized.captureToken || finalized.payload?.captureToken || null,
-        mode: "idle_selected",
-        cancelled: false,
-        captureActive: false,
-        selectedDetails: buildToolbarSelectionDetails(finalized.payload),
-        collapsed: false,
-        reason: "await_selection_ready",
-      });
-      await persistSessionState(state.store, state, { status: "bridge_ready" });
+      await persistSessionState(state.store, state, { status: hasActiveWorkflows(state) ? "waiting_for_selection" : "bridge_ready" });
       return workflowToAwaitingPayload(finalized, state.store);
     }
 
@@ -2678,13 +2784,19 @@ export async function handleInspectAction(cdp, state, args, messageId) {
   const action = typeof args.action === "string" ? args.action : "capture";
   const waitForSelectionMs = clampInt(args.waitForSelectionMs, DEFAULT_MIN_WAIT_MS, 60000, DEFAULT_WAIT_MS);
   const timeoutMs = clampInt(args.timeoutMs, 0, 60000, action === "capture" ? 0 : DEFAULT_TIMEOUT_MS);
+  const requestedTargetId =
+    typeof args.targetId === "string" && args.targetId.trim()
+      ? args.targetId.trim()
+      : null;
 
   if (action === "begin_capture") {
     await reconcilePageTargets(cdp, state);
-    const workflow = await createCaptureWorkflow(state);
+    const targetId = resolveWorkflowTargetId(state, requestedTargetId);
+    const workflow = await createCaptureWorkflow(state, targetId);
     const armStartedAt = timingNow();
     const armedAt = await armPageSelectionCapture(cdp, state, workflow);
     const armedWorkflow = await persistWorkflowState(state.store, state, workflow.workflowId, {
+      targetId,
       armedAt: armedAt || timingNow(),
       metrics: {
         inspectModeArmedAt: armedAt || timingNow(),
@@ -2694,6 +2806,7 @@ export async function handleInspectAction(cdp, state, args, messageId) {
     return {
       phase: "waiting_for_selection",
       workflowId: armedWorkflow.workflowId,
+      targetId,
       status: "waiting_for_selection",
       sequence: armedWorkflow.sequence,
     };
@@ -2733,9 +2846,11 @@ export async function handleInspectAction(cdp, state, args, messageId) {
 
   if (action === "capture") {
     await reconcilePageTargets(cdp, state);
-    const workflow = await createCaptureWorkflow(state);
+    const targetId = resolveWorkflowTargetId(state, requestedTargetId);
+    const workflow = await createCaptureWorkflow(state, targetId);
     const armedAt = await armPageSelectionCapture(cdp, state, workflow);
     await persistWorkflowState(state.store, state, workflow.workflowId, {
+      targetId,
       armedAt: armedAt || timingNow(),
       metrics: {
         inspectModeArmedAt: armedAt || timingNow(),
@@ -2751,7 +2866,7 @@ export async function handleInspectAction(cdp, state, args, messageId) {
   const workflowId =
     typeof args.workflowId === "string" && args.workflowId.trim()
       ? args.workflowId.trim()
-      : state.activeWorkflowId;
+      : getDefaultActiveWorkflowId(state);
   if (!workflowId) {
     throw new Error("inspect(action='apply_instruction') requires workflowId.");
   }
@@ -2785,20 +2900,20 @@ export async function handleInspectAction(cdp, state, args, messageId) {
     selectionSource: workflow.selectionSource || workflow.payload.selectionSource || null,
     userInstruction: args.instruction.trim(),
   });
-  if (state.activeWorkflowId === workflowId) {
-    state.activeWorkflowId = null;
+  unbindWorkflow(state, workflowId);
+  await persistSessionState(state.store, state, { status: hasActiveWorkflows(state) ? "waiting_for_selection" : "bridge_ready" });
+  if (workflow.targetId) {
+    await applyToolbarStateForTarget(cdp, state, workflow.targetId, {
+      workflowId,
+      captureToken: workflow.captureToken || workflow.payload.captureToken || null,
+      mode: "idle_selected",
+      cancelled: false,
+      captureActive: false,
+      selectedDetails: buildToolbarSelectionDetails(workflow.payload),
+      collapsed: false,
+      reason: "instruction_recorded",
+    });
   }
-  await persistSessionState(state.store, state, { status: "bridge_ready" });
-  await applyToolbarStateToAllTargets(cdp, state, {
-    workflowId,
-    captureToken: workflow.captureToken || workflow.payload.captureToken || null,
-    mode: "idle_selected",
-    cancelled: false,
-    captureActive: false,
-    selectedDetails: buildToolbarSelectionDetails(workflow.payload),
-    collapsed: false,
-    reason: "instruction_recorded",
-  });
   logSignal("instruction_recorded", { workflowId, sequence: updated.sequence });
 
   return {
@@ -2823,23 +2938,28 @@ export async function handleInspectAction(cdp, state, args, messageId) {
 
 async function recordSelectionForWorkflow(cdp, state, selection) {
   const payload = await materializeSelectionPayloadWithRecovery(cdp, state, selection);
-  const activeWorkflowId = state.activeWorkflowId;
   const captureMeta = selection.targetId ? state.captureMetaByTargetId.get(selection.targetId) : null;
-  const boundWorkflowId = selection.workflowId || captureMeta?.workflowId || null;
+  const boundWorkflowId =
+    selection.workflowId ||
+    captureMeta?.workflowId ||
+    getActiveWorkflowIdForTarget(state, selection.targetId || null) ||
+    null;
   const boundCaptureToken = selection.captureToken || captureMeta?.captureToken || null;
   let workflow = null;
-  let workflowId = null;
+  if (boundWorkflowId) {
+    workflow = await readWorkflow(state.store, boundWorkflowId);
+  }
 
-  if (activeWorkflowId) {
-    workflow = await readWorkflow(state.store, activeWorkflowId);
+  if (boundCaptureToken && !payload.captureToken) {
+    payload.captureToken = boundCaptureToken;
+  }
+
+  if (workflow?.workflowId) {
     const activeCaptureToken = workflow?.captureToken || null;
-    const isFreshSelection = !!workflow &&
-      boundWorkflowId === workflow.workflowId &&
-      !!boundCaptureToken &&
-      boundCaptureToken === activeCaptureToken;
+    const isFreshSelection = !!boundCaptureToken && boundCaptureToken === activeCaptureToken;
     if (!isFreshSelection) {
       logSignal("selection_ignored_for_inactive_workflow", {
-        activeWorkflowId,
+        activeWorkflowId: workflow.workflowId,
         selectionWorkflowId: boundWorkflowId,
         activeCaptureToken,
         selectionCaptureToken: boundCaptureToken,
@@ -2847,14 +2967,6 @@ async function recordSelectionForWorkflow(cdp, state, selection) {
       });
       return null;
     }
-    workflowId = workflow.workflowId;
-  }
-
-  if (boundCaptureToken && !payload.captureToken) {
-    payload.captureToken = boundCaptureToken;
-  }
-
-  if (workflowId) {
     await finalizeWorkflowSelection(cdp, state, workflow, payload, selection.targetId || null);
   } else {
     const currentSelection = await persistCurrentSelection(state.store, state, {
@@ -2909,12 +3021,14 @@ function queueSelectionRecord(cdp, state, selection) {
       logSignal(retryable ? "selection_record_retryable_error" : "selection_record_error", {
         error: state.lastObservedError,
       });
-      if (state.activeWorkflowId) {
-        await persistWorkflowState(state.store, state, state.activeWorkflowId, {
+      const defaultWorkflowId = getDefaultActiveWorkflowId(state);
+      if (defaultWorkflowId) {
+        await persistWorkflowState(state.store, state, defaultWorkflowId, {
           status: "error",
           phase: "error",
           error: state.lastObservedError,
         });
+        unbindWorkflow(state, defaultWorkflowId);
       }
       await persistSessionState(state.store, state, {
         status: "error",
@@ -3013,7 +3127,7 @@ async function attachPageTarget(cdp, targetInfo, state) {
         return;
       }
       const nextMeta = updateCaptureMetaForTarget(state, targetInfo.targetId, {
-        workflowId: signal.workflowId || state.activeWorkflowId || null,
+        workflowId: signal.workflowId || getActiveWorkflowIdForTarget(state, targetInfo.targetId) || null,
         captureToken: signal.captureToken || state.captureMetaByTargetId.get(targetInfo.targetId)?.captureToken || null,
         mode: signal.mode || state.captureMetaByTargetId.get(targetInfo.targetId)?.mode || "exited",
         cancelled: !!signal.cancelled,
@@ -3060,12 +3174,13 @@ async function attachPageTarget(cdp, targetInfo, state) {
     }
   });
 
-  if (state.activeWorkflowId && targetInfo.targetId === state.inspectTargetId) {
+  const activeWorkflowId = getActiveWorkflowIdForTarget(state, targetInfo.targetId);
+  if (activeWorkflowId) {
     try {
-      const workflow = await readWorkflow(state.store, state.activeWorkflowId);
+      const workflow = await readWorkflow(state.store, activeWorkflowId);
       if (workflow?.captureToken) {
         await applyToolbarStateForTarget(cdp, state, targetInfo.targetId, {
-          workflowId: state.activeWorkflowId,
+          workflowId: activeWorkflowId,
           captureToken: workflow.captureToken,
           mode: "idle",
           cancelled: false,
@@ -3076,7 +3191,7 @@ async function attachPageTarget(cdp, targetInfo, state) {
       }
     } catch (err) {
       state.lastObservedError = `page capture arm failed for ${targetInfo.targetId}: ${err?.message || err}`;
-      logSignal("page_capture_arm_error", { workflowId: state.activeWorkflowId, targetId: targetInfo.targetId, error: state.lastObservedError });
+      logSignal("page_capture_arm_error", { workflowId: activeWorkflowId, targetId: targetInfo.targetId, error: state.lastObservedError });
     }
   } else {
     await applyToolbarStateForTarget(cdp, state, targetInfo.targetId, {
@@ -3172,6 +3287,40 @@ function selectInspectTargetId(state) {
   return targetIds[targetIds.length - 1] || [...state.targetsById.keys()][0] || null;
 }
 
+function resolveWorkflowTargetId(state, requestedTargetId = null) {
+  if (requestedTargetId) {
+    if (!state.targetsById.has(requestedTargetId)) {
+      throw new Error(`Bound target missing: ${requestedTargetId}. Re-open the page and start capture again.`);
+    }
+    const ownerWorkflowId = getActiveWorkflowIdForTarget(state, requestedTargetId);
+    if (ownerWorkflowId) {
+      throw new Error(`Target ${requestedTargetId} is already controlled by inspect workflow ${ownerWorkflowId}.`);
+    }
+    return requestedTargetId;
+  }
+
+  const preferredTargetId = state.preferredTargetId && state.targetsById.has(state.preferredTargetId)
+    ? state.preferredTargetId
+    : null;
+  if (preferredTargetId) {
+    const ownerWorkflowId = getActiveWorkflowIdForTarget(state, preferredTargetId);
+    if (ownerWorkflowId) {
+      throw new Error(`Target ${preferredTargetId} is already controlled by inspect workflow ${ownerWorkflowId}.`);
+    }
+    return preferredTargetId;
+  }
+
+  const candidateTargetIds = [...state.targetInfosByTargetId.keys()].filter((targetId) => state.targetsById.has(targetId));
+  for (let idx = candidateTargetIds.length - 1; idx >= 0; idx -= 1) {
+    const targetId = candidateTargetIds[idx];
+    if (!getActiveWorkflowIdForTarget(state, targetId)) {
+      return targetId;
+    }
+  }
+
+  throw new Error("No available inspect target remains on this debug endpoint. Close a running capture or open another tab.");
+}
+
 function updateCaptureMetaForTarget(state, targetId, patch) {
   if (!targetId) {
     return null;
@@ -3246,6 +3395,24 @@ async function applyToolbarStateToAllTargets(cdp, state, options = {}) {
   }
 }
 
+async function syncToolbarStateFromMeta(cdp, state, targetId, reason = "sync_from_meta") {
+  const meta = state.captureMetaByTargetId.get(targetId) || {};
+  return applyToolbarStateForTarget(cdp, state, targetId, {
+    workflowId: meta.workflowId || null,
+    captureToken: meta.captureToken || null,
+    mode: meta.mode || "idle",
+    cancelled: !!meta.cancelled,
+    captureActive: !!meta.captureActive,
+    selectedDetails: meta.selectedDetails || null,
+    collapsed: meta.collapsed ?? true,
+    reason,
+  });
+}
+
+function hasActiveWorkflows(state) {
+  return state.activeTargetIdByWorkflowId.size > 0;
+}
+
 function parseToolbarStateSignal(message) {
   if (!message?.params?.args || !Array.isArray(message.params.args)) {
     return null;
@@ -3265,11 +3432,12 @@ function parseToolbarStateSignal(message) {
 }
 
 function getActiveCaptureMetaForTarget(state, targetId) {
-  if (!targetId || !state.activeWorkflowId) {
+  if (!targetId) {
     return null;
   }
   const meta = state.captureMetaByTargetId.get(targetId);
-  if (!meta || meta.workflowId !== state.activeWorkflowId || !meta.captureToken || !meta.captureActive) {
+  const workflowId = getActiveWorkflowIdForTarget(state, targetId);
+  if (!meta || !workflowId || meta.workflowId !== workflowId || !meta.captureToken || !meta.captureActive) {
     return null;
   }
   return meta;
@@ -3355,6 +3523,7 @@ function detachTrackedTarget(state, targetId, rootCdp) {
   if (!targetId) {
     return;
   }
+  const workflowId = getActiveWorkflowIdForTarget(state, targetId);
   const sessionState = state.targetsById.get(targetId);
   if (sessionState?.cdp && sessionState.cdp !== rootCdp && !sessionState.cdp.isClosed()) {
     sessionState.cdp.close();
@@ -3370,6 +3539,9 @@ function detachTrackedTarget(state, targetId, rootCdp) {
   }
   if (state.preferredTargetId === targetId) {
     state.preferredTargetId = null;
+  }
+  if (workflowId) {
+    unbindWorkflow(state, workflowId);
   }
   if (sessionState?.sessionId) {
     state.targetsBySessionId.delete(sessionState.sessionId);
@@ -3428,22 +3600,25 @@ async function reconcilePageTargets(cdp, state) {
 }
 
 async function markActiveWorkflowDisconnected(state, message) {
-  if (!state.activeWorkflowId) {
+  const activeWorkflowIds = getActiveWorkflowIdEntries(state).map((entry) => entry.workflowId);
+  if (!activeWorkflowIds.length) {
     await persistSessionState(state.store, state, {
       status: "browser_disconnected",
       error: message,
     });
     return;
   }
-  await persistWorkflowState(state.store, state, state.activeWorkflowId, {
-    status: "browser_disconnected",
-    phase: "browser_disconnected",
-    error: message,
-    metrics: {
-      disconnectedAt: timingNow(),
-    },
-  });
-  state.activeWorkflowId = null;
+  for (const workflowId of activeWorkflowIds) {
+    await persistWorkflowState(state.store, state, workflowId, {
+      status: "browser_disconnected",
+      phase: "browser_disconnected",
+      error: message,
+      metrics: {
+        disconnectedAt: timingNow(),
+      },
+    });
+    unbindWorkflow(state, workflowId);
+  }
   await persistSessionState(state.store, state, {
     status: "browser_disconnected",
     error: message,
@@ -3471,6 +3646,7 @@ export async function connectInspectRuntime({
   startupUrl = "",
 } = {}) {
   const attachStartedAt = timingNow();
+  await assertDedicatedBrowserOwnership(debugUrl);
   const version = await fetchJson(`${debugUrl}/json/version`);
   const wsUrl = version.webSocketDebuggerUrl;
   if (!wsUrl) {
@@ -3491,6 +3667,8 @@ export async function connectInspectRuntime({
     lastObservedError: null,
     targetDomainAvailable: false,
     activeWorkflowId: null,
+    activeWorkflowByTargetId: new Map(),
+    activeTargetIdByWorkflowId: new Map(),
     selectionRecorder: Promise.resolve(),
     domReadyBySessionKey: new Set(),
     captureMetaByTargetId: new Map(),
@@ -3549,7 +3727,7 @@ export async function connectInspectRuntime({
       },
     });
 
-    const restoredWorkflow = await restoreActiveWorkflowState(state.store, state, state.bridgeOwner);
+    const restoredWorkflows = await restoreActiveWorkflowState(state.store, state, state.bridgeOwner);
 
     let targetInfos = await loadTargetsFromTargetDomain(cdp, state);
     if (!targetInfos.length) {
@@ -3575,7 +3753,9 @@ export async function connectInspectRuntime({
 
     await persistSessionState(state.store, state, {
       startupUrl,
-      status: state.activeWorkflowId ? restoredWorkflow?.status || "waiting_for_selection" : "bridge_ready",
+      status: hasActiveWorkflows(state)
+        ? restoredWorkflows[0]?.status || "waiting_for_selection"
+        : "bridge_ready",
     });
     state.runtimeMetrics.runtimeAttachedAt = timingNow();
     state.targetRefreshTimer = setInterval(() => {
@@ -3592,7 +3772,8 @@ export async function connectInspectRuntime({
       state,
       debugUrl,
       startupUrl,
-      restoredWorkflow,
+      restoredWorkflow: restoredWorkflows[0] || null,
+      restoredWorkflows,
     };
   } catch (err) {
     clearBridgeOwnerSync(state.store, state.bridgeOwner?.pid || process.pid);

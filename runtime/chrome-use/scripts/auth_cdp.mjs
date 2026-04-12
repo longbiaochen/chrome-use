@@ -4,9 +4,10 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { getDefaultDebugUrl } from "./inspect_runtime.mjs";
+import { assertDedicatedBrowserOwnership, getDefaultDebugUrl } from "./inspect_runtime.mjs";
 
 const DEFAULT_ACTION_TIMEOUT_MS = 5000;
 const DEFAULT_WAIT_TIMEOUT_MS = 10000;
@@ -16,17 +17,18 @@ function printUsage() {
   console.error(`Usage:
   auth-cdp status [--browser-url <url>]
   auth-cdp list-pages [--browser-url <url>]
+  auth-cdp bind-page --page-id <id> [--browser-url <url>]
   auth-cdp select-page --page-id <id> [--browser-url <url>]
-  auth-cdp navigate --url <url> [--browser-url <url>] [--page-id <id>]
-  auth-cdp wait-for --text <value> [--timeout-ms <ms>] [--browser-url <url>] [--page-id <id>]
-  auth-cdp snapshot [--mode dom|a11y] [--output <path>] [--browser-url <url>] [--page-id <id>]
-  auth-cdp screenshot [--selector <css>] [--output <path>] [--browser-url <url>] [--page-id <id>]
-  auth-cdp find --selector <css> [--browser-url <url>] [--page-id <id>]
-  auth-cdp hover --selector <css> [--browser-url <url>] [--page-id <id>]
-  auth-cdp click --selector <css> [--browser-url <url>] [--page-id <id>]
-  auth-cdp fill --selector <css> --text <text> [--browser-url <url>] [--page-id <id>]
-  auth-cdp type --selector <css> --text <text> [--browser-url <url>] [--page-id <id>]
-  auth-cdp press-key --key <key> [--browser-url <url>] [--page-id <id>]`);
+  auth-cdp navigate --url <url> [--browser-url <url>] [--page-id <id>] [--binding-id <id>]
+  auth-cdp wait-for --text <value> [--timeout-ms <ms>] [--browser-url <url>] [--page-id <id>] [--binding-id <id>]
+  auth-cdp snapshot [--mode dom|a11y] [--output <path>] [--browser-url <url>] [--page-id <id>] [--binding-id <id>]
+  auth-cdp screenshot [--selector <css>] [--output <path>] [--browser-url <url>] [--page-id <id>] [--binding-id <id>]
+  auth-cdp find --selector <css> [--browser-url <url>] [--page-id <id>] [--binding-id <id>]
+  auth-cdp hover --selector <css> [--browser-url <url>] [--page-id <id>] [--binding-id <id>]
+  auth-cdp click --selector <css> [--browser-url <url>] [--page-id <id>] [--binding-id <id>]
+  auth-cdp fill --selector <css> --text <text> [--browser-url <url>] [--page-id <id>] [--binding-id <id>]
+  auth-cdp type --selector <css> --text <text> [--browser-url <url>] [--page-id <id>] [--binding-id <id>]
+  auth-cdp press-key --key <key> [--browser-url <url>] [--page-id <id>] [--binding-id <id>]`);
 }
 
 function parseArgs(argv) {
@@ -114,6 +116,22 @@ function createProtocolSession(wsUrl) {
   };
 }
 
+async function withTimeout(promise, timeoutMs, label) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 async function fetchJson(url) {
   const response = await fetch(url);
   if (!response.ok) {
@@ -134,6 +152,14 @@ function getAuthScope(debugUrl) {
 
 function getSelectedPagePath(debugUrl) {
   return path.join(getAuthScope(debugUrl), "selected-page.json");
+}
+
+function getBindingsDir(debugUrl) {
+  return path.join(getAuthScope(debugUrl), "bindings");
+}
+
+function getBindingPath(debugUrl, bindingId) {
+  return path.join(getBindingsDir(debugUrl), `${bindingId}.json`);
 }
 
 async function readSelectedPage(debugUrl) {
@@ -159,6 +185,36 @@ async function writeSelectedPage(debugUrl, pageId) {
   );
 }
 
+async function readBinding(debugUrl, bindingId) {
+  if (!bindingId) {
+    return null;
+  }
+  const filePath = getBindingPath(debugUrl, bindingId);
+  if (!existsSync(filePath)) {
+    return null;
+  }
+  try {
+    return JSON.parse(await readFile(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+async function writeBinding(debugUrl, page) {
+  const bindingId = randomUUID();
+  const filePath = getBindingPath(debugUrl, bindingId);
+  await mkdir(path.dirname(filePath), { recursive: true });
+  const payload = {
+    bindingId,
+    pageId: page?.id || null,
+    url: page?.url || null,
+    title: page?.title || null,
+    createdAt: new Date().toISOString(),
+  };
+  await writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  return payload;
+}
+
 function serializePage(page, selectedPageId = null) {
   if (!page) {
     return null;
@@ -171,17 +227,27 @@ function serializePage(page, selectedPageId = null) {
   };
 }
 
-async function resolvePageState(debugUrl, explicitPageId = "") {
+async function resolvePageState(debugUrl, { pageId = "", bindingId = "", allowStoredSelection = true } = {}) {
   const version = await fetchJson(`${debugUrl}/json/version`);
   const list = await fetchJson(`${debugUrl}/json/list`);
   const pages = Array.isArray(list) ? list.filter((item) => item?.type === "page") : [];
-  const storedPageId = explicitPageId || (await readSelectedPage(debugUrl)) || "";
-  let selectedPage = storedPageId ? pages.find((item) => item?.id === storedPageId) || null : null;
-  let selectionSource = explicitPageId ? "requested_page" : storedPageId ? "stored_page" : "latest_page";
+  const binding = bindingId ? await readBinding(debugUrl, bindingId) : null;
+  const requestedPageId = pageId || binding?.pageId || (allowStoredSelection ? (await readSelectedPage(debugUrl)) || "" : "");
+  let selectedPage = requestedPageId ? pages.find((item) => item?.id === requestedPageId) || null : null;
+  let selectionSource = pageId
+    ? "requested_page"
+    : bindingId
+      ? "binding_page"
+      : requestedPageId
+        ? "stored_page"
+        : "latest_page";
 
   if (!selectedPage) {
+    if (pageId || bindingId) {
+      throw new Error(`Bound target missing: ${pageId || binding?.pageId || bindingId}. Re-bind the page and retry.`);
+    }
     selectedPage = pages[pages.length - 1] || null;
-    if (storedPageId && !explicitPageId) {
+    if (requestedPageId) {
       selectionSource = "stored_page_missing";
     }
   }
@@ -190,6 +256,8 @@ async function resolvePageState(debugUrl, explicitPageId = "") {
     browserWsUrl: version.webSocketDebuggerUrl || null,
     pages,
     selectedPage,
+    requestedPageId: requestedPageId || null,
+    binding: binding || null,
     selectionSource,
   };
 }
@@ -207,17 +275,78 @@ function escapeJsString(value) {
   return JSON.stringify(String(value));
 }
 
-async function openPageSession(debugUrl, explicitPageId = "") {
-  const pageState = await resolvePageState(debugUrl, explicitPageId);
+async function openPageSession(debugUrl, explicitPageId = "", bindingId = "") {
+  const pageState = await resolvePageState(debugUrl, {
+    pageId: explicitPageId,
+    bindingId,
+    allowStoredSelection: !explicitPageId && !bindingId,
+  });
   if (!pageState.selectedPage?.webSocketDebuggerUrl) {
     throw new Error(`No page target is available at ${debugUrl}. Open a page in the dedicated profile first.`);
   }
-  const session = createProtocolSession(pageState.selectedPage.webSocketDebuggerUrl);
-  await session.waitOpen();
-  await session.send("Page.enable");
-  await session.send("Runtime.enable");
-  await session.send("DOM.enable");
-  return { session, pageState };
+
+  if (explicitPageId || bindingId) {
+    const session = createProtocolSession(pageState.selectedPage.webSocketDebuggerUrl);
+    await withTimeout(session.waitOpen(), DEFAULT_ACTION_TIMEOUT_MS, `Opening page ${pageState.selectedPage.id}`);
+    await withTimeout(session.send("Page.enable"), DEFAULT_ACTION_TIMEOUT_MS, `Enabling Page domain for ${pageState.selectedPage.id}`);
+    await withTimeout(session.send("Runtime.enable"), DEFAULT_ACTION_TIMEOUT_MS, `Enabling Runtime domain for ${pageState.selectedPage.id}`);
+    await withTimeout(session.send("DOM.enable"), DEFAULT_ACTION_TIMEOUT_MS, `Enabling DOM domain for ${pageState.selectedPage.id}`);
+    return { session, pageState };
+  }
+
+  const candidatePages = [
+    pageState.selectedPage,
+    ...pageState.pages.filter((page) => {
+      if (!page || page.id === pageState.selectedPage.id) {
+        return false;
+      }
+      if (page.url === pageState.selectedPage.url) {
+        return true;
+      }
+      if (page.title && page.title === pageState.selectedPage.title) {
+        return true;
+      }
+      return false;
+    }),
+  ];
+
+  const failures = [];
+
+  for (const candidatePage of candidatePages) {
+    if (!candidatePage?.webSocketDebuggerUrl) {
+      continue;
+    }
+
+    const session = createProtocolSession(candidatePage.webSocketDebuggerUrl);
+
+    try {
+      await withTimeout(session.waitOpen(), DEFAULT_ACTION_TIMEOUT_MS, `Opening page ${candidatePage.id}`);
+      await withTimeout(session.send("Page.enable"), DEFAULT_ACTION_TIMEOUT_MS, `Enabling Page domain for ${candidatePage.id}`);
+      await withTimeout(session.send("Runtime.enable"), DEFAULT_ACTION_TIMEOUT_MS, `Enabling Runtime domain for ${candidatePage.id}`);
+      await withTimeout(session.send("DOM.enable"), DEFAULT_ACTION_TIMEOUT_MS, `Enabling DOM domain for ${candidatePage.id}`);
+
+      if (!explicitPageId && candidatePage.id !== pageState.selectedPage.id) {
+        await writeSelectedPage(debugUrl, candidatePage.id);
+      }
+
+      return {
+        session,
+        pageState: {
+          ...pageState,
+          selectedPage: candidatePage,
+          selectionSource:
+            candidatePage.id === pageState.selectedPage.id ? pageState.selectionSource : "responsive_page_fallback",
+        },
+      };
+    } catch (error) {
+      failures.push(`${candidatePage.id}: ${error.message}`);
+      session.close();
+    }
+  }
+
+  throw new Error(
+    `Unable to open a responsive page target at ${debugUrl}. Tried ${candidatePages.length} candidate(s). ${failures.join(" | ")}`,
+  );
 }
 
 function probeSelectorExpression(selector) {
@@ -492,8 +621,22 @@ async function runListPages(debugUrl) {
   };
 }
 
+async function runBindPage(debugUrl, pageId) {
+  const pageState = await resolvePageState(debugUrl, { pageId, allowStoredSelection: false });
+  if (!pageState.selectedPage || pageState.selectedPage.id !== pageId) {
+    throw new Error(`Could not find page id '${pageId}' on ${debugUrl}.`);
+  }
+  const binding = await writeBinding(debugUrl, pageState.selectedPage);
+  return {
+    browserUrl: debugUrl,
+    binding,
+    selectedPage: serializePage(pageState.selectedPage, pageId),
+    pageCount: pageState.pages.length,
+  };
+}
+
 async function runSelectPage(debugUrl, pageId) {
-  const pageState = await resolvePageState(debugUrl, pageId);
+  const pageState = await resolvePageState(debugUrl, { pageId, allowStoredSelection: false });
   if (!pageState.selectedPage || pageState.selectedPage.id !== pageId) {
     throw new Error(`Could not find page id '${pageId}' on ${debugUrl}.`);
   }
@@ -505,8 +648,8 @@ async function runSelectPage(debugUrl, pageId) {
   };
 }
 
-async function runNavigate(debugUrl, url, pageId = "", timeoutMs = DEFAULT_WAIT_TIMEOUT_MS) {
-  const { session, pageState } = await openPageSession(debugUrl, pageId);
+async function runNavigate(debugUrl, url, pageId = "", timeoutMs = DEFAULT_WAIT_TIMEOUT_MS, bindingId = "") {
+  const { session, pageState } = await openPageSession(debugUrl, pageId, bindingId);
   try {
     await session.send("Page.navigate", { url });
     const page = await waitForPageReady(session, timeoutMs, url);
@@ -521,8 +664,8 @@ async function runNavigate(debugUrl, url, pageId = "", timeoutMs = DEFAULT_WAIT_
   }
 }
 
-async function runSnapshot(debugUrl, mode = "dom", outputPath = "", pageId = "") {
-  const { session, pageState } = await openPageSession(debugUrl, pageId);
+async function runSnapshot(debugUrl, mode = "dom", outputPath = "", pageId = "", bindingId = "") {
+  const { session, pageState } = await openPageSession(debugUrl, pageId, bindingId);
   try {
     const page = await evaluate(
       session,
@@ -618,8 +761,8 @@ async function runSnapshot(debugUrl, mode = "dom", outputPath = "", pageId = "")
   }
 }
 
-async function runScreenshot(debugUrl, outputPath = "", selector = "", pageId = "") {
-  const { session, pageState } = await openPageSession(debugUrl, pageId);
+async function runScreenshot(debugUrl, outputPath = "", selector = "", pageId = "", bindingId = "") {
+  const { session, pageState } = await openPageSession(debugUrl, pageId, bindingId);
   try {
     let screenshot;
     let matchedElement = null;
@@ -668,8 +811,8 @@ async function runScreenshot(debugUrl, outputPath = "", selector = "", pageId = 
   }
 }
 
-async function runFind(debugUrl, selector, pageId = "") {
-  const { session, pageState } = await openPageSession(debugUrl, pageId);
+async function runFind(debugUrl, selector, pageId = "", bindingId = "") {
+  const { session, pageState } = await openPageSession(debugUrl, pageId, bindingId);
   try {
     const result = await evaluate(session, probeSelectorExpression(selector));
     return {
@@ -682,8 +825,8 @@ async function runFind(debugUrl, selector, pageId = "") {
   }
 }
 
-async function runHover(debugUrl, selector, pageId = "") {
-  const { session, pageState } = await openPageSession(debugUrl, pageId);
+async function runHover(debugUrl, selector, pageId = "", bindingId = "") {
+  const { session, pageState } = await openPageSession(debugUrl, pageId, bindingId);
   try {
     const probe = await waitForSelector(session, selector, DEFAULT_ACTION_TIMEOUT_MS);
     if (!probe?.found) {
@@ -711,8 +854,8 @@ async function runHover(debugUrl, selector, pageId = "") {
   }
 }
 
-async function runClick(debugUrl, selector, pageId = "") {
-  const { session, pageState } = await openPageSession(debugUrl, pageId);
+async function runClick(debugUrl, selector, pageId = "", bindingId = "") {
+  const { session, pageState } = await openPageSession(debugUrl, pageId, bindingId);
   try {
     const probe = await waitForSelector(session, selector, DEFAULT_ACTION_TIMEOUT_MS);
     if (!probe?.found) {
@@ -770,8 +913,8 @@ async function runClick(debugUrl, selector, pageId = "") {
   }
 }
 
-async function runFill(debugUrl, selector, text, pageId = "", mode = "fill") {
-  const { session, pageState } = await openPageSession(debugUrl, pageId);
+async function runFill(debugUrl, selector, text, pageId = "", mode = "fill", bindingId = "") {
+  const { session, pageState } = await openPageSession(debugUrl, pageId, bindingId);
   try {
     const probe = await waitForSelector(session, selector, DEFAULT_ACTION_TIMEOUT_MS);
     if (!probe?.found) {
@@ -842,8 +985,8 @@ async function runFill(debugUrl, selector, text, pageId = "", mode = "fill") {
   }
 }
 
-async function runWaitFor(debugUrl, text, timeoutMs, pageId = "") {
-  const { session, pageState } = await openPageSession(debugUrl, pageId);
+async function runWaitFor(debugUrl, text, timeoutMs, pageId = "", bindingId = "") {
+  const { session, pageState } = await openPageSession(debugUrl, pageId, bindingId);
   try {
     const result = await waitForText(session, text, timeoutMs);
     return {
@@ -856,8 +999,8 @@ async function runWaitFor(debugUrl, text, timeoutMs, pageId = "") {
   }
 }
 
-async function runPressKey(debugUrl, keyCombo, pageId = "") {
-  const { session, pageState } = await openPageSession(debugUrl, pageId);
+async function runPressKey(debugUrl, keyCombo, pageId = "", bindingId = "") {
+  const { session, pageState } = await openPageSession(debugUrl, pageId, bindingId);
   try {
     const { modifiers, baseKey } = parseKeyCombo(keyCombo);
     let modifierBits = 0;
@@ -927,13 +1070,20 @@ async function main() {
     }
 
     const debugUrl = flags["browser-url"] || getDefaultDebugUrl();
+    await assertDedicatedBrowserOwnership(debugUrl);
     const pageId = flags["page-id"] || "";
+    const bindingId = flags["binding-id"] || "";
     let result;
 
     if (command === "status") {
       result = await runStatus(debugUrl);
     } else if (command === "list-pages") {
       result = await runListPages(debugUrl);
+    } else if (command === "bind-page") {
+      if (!flags["page-id"]) {
+        throw new Error("auth-cdp bind-page requires --page-id.");
+      }
+      result = await runBindPage(debugUrl, flags["page-id"]);
     } else if (command === "select-page") {
       if (!flags["page-id"]) {
         throw new Error("auth-cdp select-page requires --page-id.");
@@ -943,50 +1093,50 @@ async function main() {
       if (!flags.url) {
         throw new Error("auth-cdp navigate requires --url.");
       }
-      result = await runNavigate(debugUrl, flags.url, pageId, parseTimeout(flags, DEFAULT_WAIT_TIMEOUT_MS));
+      result = await runNavigate(debugUrl, flags.url, pageId, parseTimeout(flags, DEFAULT_WAIT_TIMEOUT_MS), bindingId);
     } else if (command === "wait-for") {
       if (!Object.hasOwn(flags, "text")) {
         throw new Error("auth-cdp wait-for requires --text.");
       }
-      result = await runWaitFor(debugUrl, flags.text, parseTimeout(flags, DEFAULT_WAIT_TIMEOUT_MS), pageId);
+      result = await runWaitFor(debugUrl, flags.text, parseTimeout(flags, DEFAULT_WAIT_TIMEOUT_MS), pageId, bindingId);
     } else if (command === "snapshot") {
       const mode = flags.mode || "dom";
       if (!["dom", "a11y"].includes(mode)) {
         throw new Error("auth-cdp snapshot --mode must be 'dom' or 'a11y'.");
       }
-      result = await runSnapshot(debugUrl, mode, flags.output || "", pageId);
+      result = await runSnapshot(debugUrl, mode, flags.output || "", pageId, bindingId);
     } else if (command === "screenshot") {
-      result = await runScreenshot(debugUrl, flags.output || "", flags.selector || "", pageId);
+      result = await runScreenshot(debugUrl, flags.output || "", flags.selector || "", pageId, bindingId);
     } else if (command === "find") {
       if (!flags.selector) {
         throw new Error("auth-cdp find requires --selector.");
       }
-      result = await runFind(debugUrl, flags.selector, pageId);
+      result = await runFind(debugUrl, flags.selector, pageId, bindingId);
     } else if (command === "hover") {
       if (!flags.selector) {
         throw new Error("auth-cdp hover requires --selector.");
       }
-      result = await runHover(debugUrl, flags.selector, pageId);
+      result = await runHover(debugUrl, flags.selector, pageId, bindingId);
     } else if (command === "click") {
       if (!flags.selector) {
         throw new Error("auth-cdp click requires --selector.");
       }
-      result = await runClick(debugUrl, flags.selector, pageId);
+      result = await runClick(debugUrl, flags.selector, pageId, bindingId);
     } else if (command === "fill") {
       if (!flags.selector || !Object.hasOwn(flags, "text")) {
         throw new Error("auth-cdp fill requires --selector and --text.");
       }
-      result = await runFill(debugUrl, flags.selector, flags.text, pageId, "fill");
+      result = await runFill(debugUrl, flags.selector, flags.text, pageId, "fill", bindingId);
     } else if (command === "type") {
       if (!flags.selector || !Object.hasOwn(flags, "text")) {
         throw new Error("auth-cdp type requires --selector and --text.");
       }
-      result = await runFill(debugUrl, flags.selector, flags.text, pageId, "type");
+      result = await runFill(debugUrl, flags.selector, flags.text, pageId, "type", bindingId);
     } else if (command === "press-key") {
       if (!flags.key) {
         throw new Error("auth-cdp press-key requires --key.");
       }
-      result = await runPressKey(debugUrl, flags.key, pageId);
+      result = await runPressKey(debugUrl, flags.key, pageId, bindingId);
     } else {
       throw new Error(`Unsupported auth-cdp command: ${command}`);
     }
