@@ -244,9 +244,20 @@ function readRuntimeHandle(store) {
   return readJsonIfPresent(store.runtimePath);
 }
 
-function runtimeLaunchLabel(store) {
-  const scope = path.basename(store.inspectDir).replace(/[^a-zA-Z0-9_.-]/g, "_");
-  return `com.chromeuse.inspect.${scope}`;
+function synthesizeRuntimeHandle(store, defaults = {}) {
+  const socketPath = runtimeSocketPath(store);
+  if (!existsSync(socketPath)) {
+    return null;
+  }
+  const persisted = readRuntimeHandle(store) || {};
+  return {
+    pid: persisted.pid ?? null,
+    socketPath,
+    debugUrl: persisted.debugUrl || defaults.debugUrl || null,
+    startupUrl: persisted.startupUrl || defaults.startupUrl || "",
+    readyAt: persisted.readyAt || null,
+    lastSeenAt: persisted.lastSeenAt || null,
+  };
 }
 
 async function persistRuntimeHandle(store, handle) {
@@ -291,41 +302,16 @@ function logSignal(event, details = {}) {
   })}\n`);
 }
 
-async function waitForRuntimeReady(store, predicate = () => true, timeoutMs = 5000) {
+async function waitForRuntimeReady(store, defaults = {}, predicate = () => true, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const handle = readRuntimeHandle(store);
+    const handle = synthesizeRuntimeHandle(store, defaults);
     if (handle?.socketPath && existsSync(handle.socketPath) && predicate(handle)) {
       return handle;
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   return null;
-}
-
-function launchRuntimeServerWithLaunchctl({ scriptPath, debugUrl, startupUrl, store }) {
-  const label = runtimeLaunchLabel(store);
-  try {
-    execFileSync("launchctl", ["remove", label], { stdio: "ignore" });
-  } catch {
-    // Ignore missing pre-existing jobs.
-  }
-  execFileSync("launchctl", [
-    "submit",
-    "-l",
-    label,
-    "--",
-    process.execPath,
-    scriptPath,
-    "__daemon",
-    "--browser-url",
-    debugUrl,
-    "--startup-url",
-    startupUrl,
-  ], {
-    stdio: "ignore",
-  });
-  return label;
 }
 
 async function connectSocket(socketPath, timeoutMs = 2000) {
@@ -391,32 +377,29 @@ async function ensureRuntimeServer({
   debugUrl,
   startupUrl,
 }) {
-  const existing = readRuntimeHandle(store);
-  if (existing?.pid && isPidAlive(existing.pid) && existing.socketPath && existsSync(existing.socketPath)) {
+  const existing = synthesizeRuntimeHandle(store, { debugUrl, startupUrl });
+  if (existing?.socketPath && existsSync(existing.socketPath) && (!existing.pid || isPidAlive(existing.pid))) {
     if (existing.debugUrl === debugUrl) {
       return existing;
     }
     await shutdownRuntimeServer(existing);
-    clearRuntimeHandle(store, existing.pid);
+    clearRuntimeHandle(store, existing.pid ?? null);
   } else if (existing?.pid) {
     clearRuntimeHandle(store, existing.pid);
   }
 
-  if (process.platform === "darwin") {
-    launchRuntimeServerWithLaunchctl({ scriptPath, debugUrl, startupUrl, store });
-  } else {
-    const child = spawn(
-      process.execPath,
-      [scriptPath, "__daemon", "--browser-url", debugUrl, "--startup-url", startupUrl],
-      {
-        detached: true,
-        stdio: "ignore",
-      },
-    );
-    child.unref();
-  }
+  const child = spawn(
+    process.execPath,
+    [scriptPath, "__daemon", "--browser-url", debugUrl, "--startup-url", startupUrl],
+    {
+      detached: true,
+      stdio: "ignore",
+    },
+  );
+  child.unref();
   const handle = await waitForRuntimeReady(
     store,
+    { debugUrl, startupUrl },
     (candidate) => candidate?.debugUrl === debugUrl,
   );
   if (!handle) {
