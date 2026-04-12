@@ -355,15 +355,15 @@ EOF
   assert_contains "exactly one owning process" "$ENSURE_STDERR" "multiple process case explains blocker"
 }
 
-test_blocks_multiple_dedicated_windows() {
+test_allows_multiple_dedicated_windows() {
   setup_case
   printf '303 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=%s --remote-debugging-port=9223\n' "$CHROME_USE_PROFILE_DIR" >"$MOCK_PS_FILE"
   printf '2' >"$MOCK_WINDOW_COUNT_FILE"
 
   run_ensure
 
-  assert_eq "1" "$ENSURE_STATUS" "multiple window case fails"
-  assert_contains "exactly one window" "$ENSURE_STDERR" "multiple window case explains blocker"
+  assert_eq "0" "$ENSURE_STATUS" "multiple window case exits successfully"
+  assert_eq "http://127.0.0.1:9223" "$ENSURE_STDOUT" "multiple window case returns debug URL"
 }
 
 test_blocks_wrong_endpoint_owner() {
@@ -401,16 +401,16 @@ test_doctor_reports_ready_state() {
   assert_contains "Status: dedicated profile is ready" "$DOCTOR_STDOUT" "doctor ready case reports success"
 }
 
-test_doctor_reports_window_blocker() {
+test_doctor_reports_multiple_windows_as_ready() {
   setup_case
   printf '808 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=%s --remote-debugging-port=9223\n' "$CHROME_USE_PROFILE_DIR" >"$MOCK_PS_FILE"
   printf '2' >"$MOCK_WINDOW_COUNT_FILE"
 
   run_doctor
 
-  assert_eq "1" "$DOCTOR_STATUS" "doctor multiple window case fails"
+  assert_eq "0" "$DOCTOR_STATUS" "doctor multiple window case exits successfully"
   assert_contains "Window count: 2" "$DOCTOR_STDOUT" "doctor multiple window case reports window count"
-  assert_contains "must have exactly one window" "$DOCTOR_STDOUT" "doctor multiple window case reports blocker"
+  assert_contains "multiple windows detected" "$DOCTOR_STDOUT" "doctor multiple window case reports advisory"
 }
 
 test_allows_page_target_fallback_when_window_probe_reports_zero() {
@@ -516,6 +516,36 @@ EOF
   node_args="$(cat "$CASE_DIR/node.log" 2>/dev/null || true)"
 
   assert_contains "runtime/chrome-use/scripts/inspect_capture.mjs begin --project-root /tmp/project" "$node_args" "inspect-capture wrapper delegates to shared runtime"
+}
+
+test_materialized_installed_wrappers_resolve_dist_runtime() {
+  setup_case
+  local mock_node_dir="$CASE_DIR/mock-node"
+  local install_root="$CASE_DIR/install-root"
+  local dist_root="$install_root/dist"
+  local target_root="$CASE_DIR/target-root"
+  mkdir -p "$mock_node_dir" "$dist_root/runtime" "$dist_root/skills" "$target_root"
+
+  cat >"$mock_node_dir/node" <<'EOF'
+#!/usr/bin/env bash
+if [[ -n "${MOCK_NODE_LOG:-}" ]]; then
+  printf '%s\n' "$*" >>"$MOCK_NODE_LOG"
+fi
+exit 0
+EOF
+  chmod +x "$mock_node_dir/node"
+
+  cp -R "$RUNTIME_ROOT" "$dist_root/runtime/"
+  cp -R "$SKILLS_ROOT/chrome-inspect" "$target_root/"
+  cp -R "$SKILLS_ROOT/chrome-auth" "$target_root/"
+
+  MOCK_NODE_LOG="$CASE_DIR/node.log" CHROME_USE_INSTALL_ROOT="$install_root" PATH="$mock_node_dir:$PATH" bash "$target_root/chrome-inspect/scripts/inspect-capture" begin --project-root "/tmp/project" >"$CASE_DIR/inspect-installed.out" 2>"$CASE_DIR/inspect-installed.err" || true
+  MOCK_NODE_LOG="$CASE_DIR/node.log" CHROME_USE_INSTALL_ROOT="$install_root" PATH="$mock_node_dir:$PATH" bash "$target_root/chrome-auth/scripts/auth-cdp" >"$CASE_DIR/auth-installed.out" 2>"$CASE_DIR/auth-installed.err" || true
+  local node_args
+  node_args="$(cat "$CASE_DIR/node.log" 2>/dev/null || true)"
+
+  assert_contains "$install_root/dist/runtime/chrome-use/scripts/inspect_capture.mjs begin --project-root /tmp/project" "$node_args" "materialized inspect wrapper resolves install-root runtime"
+  assert_contains "$install_root/dist/runtime/chrome-use/scripts/auth_cdp.mjs" "$node_args" "materialized auth wrapper resolves install-root runtime"
 }
 
 test_auth_cdp_wrapper_targets_shared_runtime() {
@@ -702,16 +732,17 @@ main() {
   test_reuses_existing_target_only_when_activation_is_explicit
   test_cleans_stale_profile_process_before_launch
   test_blocks_multiple_dedicated_processes
-  test_blocks_multiple_dedicated_windows
+  test_allows_multiple_dedicated_windows
   test_blocks_wrong_endpoint_owner
   test_allows_other_profiles
   test_doctor_reports_ready_state
-  test_doctor_reports_window_blocker
+  test_doctor_reports_multiple_windows_as_ready
   test_allows_page_target_fallback_when_window_probe_reports_zero
   test_ignores_renderer_helpers_for_process_ownership
   test_blocks_project_webapp_restart_on_port_conflict
   test_reuses_reachable_project_webapp_listener
   test_inspect_capture_wrapper_targets_shared_runtime
+  test_materialized_installed_wrappers_resolve_dist_runtime
   test_auth_cdp_wrapper_targets_shared_runtime
   test_auth_cdp_source_tracks_page_context_and_richer_actions
   test_inspect_capture_latest_reads_persisted_selection_without_runtime

@@ -39,7 +39,7 @@ fi
 if [[ "$matching_count" -eq 1 ]]; then
   pid="$(awk 'NF { print; exit }' <<<"$matching_pids")"
   if [[ "$(platform)" == "macos" ]]; then
-    if ! window_count="$(window_count_for_pid "$pid" 2>/dev/null)"; then
+    if ! window_count="$(determine_dedicated_window_count "$pid" 2>/dev/null)"; then
       echo "Window count: unavailable"
       echo "Status: blocker; unable to inspect dedicated-profile Chrome windows"
       exit 1
@@ -50,9 +50,13 @@ if [[ "$matching_count" -eq 1 ]]; then
       echo "Status: dedicated profile is ready (page-target fallback)"
       exit 0
     fi
-    if [[ "$window_count" != "1" ]]; then
-      echo "Status: blocker; dedicated-profile Chrome must have exactly one window"
+    if [[ "$window_count" == "unavailable" ]]; then
+      echo "Status: blocker; unable to inspect dedicated-profile Chrome windows"
       exit 1
+    fi
+    if [[ "$window_count" =~ ^[0-9]+$ ]] && [[ "$window_count" -gt 1 ]]; then
+      echo "Status: dedicated profile is ready (multiple windows detected)"
+      exit 0
     fi
   else
     echo "Window count: unsupported"

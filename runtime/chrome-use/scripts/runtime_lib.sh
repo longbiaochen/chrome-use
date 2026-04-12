@@ -104,7 +104,7 @@ is_browser_root_process() {
   local command_line="${1:-}"
   [[ -n "$command_line" ]] || return 1
   [[ "$command_line" == *"$PROFILE_DIR"* ]] || return 1
-  [[ "$command_line" == *"Google Chrome"* || "$command_line" == *"google-chrome"* || "$command_line" == *"chromium"* ]] || return 1
+  [[ "$command_line" == *"Google Chrome"* || "$command_line" == *"Agent Profile Chrome"* || "$command_line" == *"google-chrome"* || "$command_line" == *"chromium"* ]] || return 1
   [[ "$command_line" != *" --type="* ]] || return 1
   [[ "$command_line" != *" Helper"* ]] || return 1
   return 0
@@ -164,33 +164,56 @@ EOF
   esac
 }
 
-validate_dedicated_window_invariant() {
+app_window_count() {
+  local os
+  os="$(platform)"
+
+  case "$os" in
+    macos)
+      osascript <<'EOF'
+tell application "Google Chrome"
+  return (count of windows) as string
+end tell
+EOF
+      ;;
+    *)
+      echo "unsupported"
+      ;;
+  esac
+}
+
+determine_dedicated_window_count() {
   local pid="$1"
   local os
   local window_count
+  local visible_window_count
   local page_target_count
 
   os="$(platform)"
   if [[ "$os" != "macos" ]]; then
+    echo "unsupported"
     return 0
   fi
 
   if ! window_count="$(window_count_for_pid "$pid" 2>/dev/null)"; then
-    echo "Unable to inspect Chrome windows for the dedicated profile process ${pid}." >&2
+    echo "unavailable"
     return 1
   fi
 
-  if [[ "$window_count" == "0" ]]; then
-    page_target_count="$(debug_page_target_count)"
-    if [[ "$page_target_count" -gt 0 ]]; then
-      return 0
-    fi
+  page_target_count="$(debug_page_target_count)"
+  if [[ "$window_count" == "0" && "$page_target_count" -gt 0 ]]; then
+    echo "$window_count"
+    return 0
   fi
 
   if [[ "$window_count" != "1" ]]; then
-    echo "Dedicated profile Chrome must have exactly one window; found ${window_count} window(s) for process ${pid}." >&2
-    return 1
+    if visible_window_count="$(app_window_count 2>/dev/null)"; then
+      if [[ -n "${visible_window_count:-}" && "$visible_window_count" != "unsupported" && "$page_target_count" -gt 0 ]]; then
+        window_count="$visible_window_count"
+      fi
+    fi
   fi
 
+  echo "$window_count"
   return 0
 }

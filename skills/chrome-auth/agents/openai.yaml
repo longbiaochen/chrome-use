@@ -12,6 +12,7 @@ interface:
        - explicit auth/login/authorization URL
        - `CHROME_USE_DEFAULT_WEBAPP_URL`
        - `about:blank`
+       This public entrypoint must first preflight the canonical dedicated runtime and only continue when the endpoint is owned by `agent-profile` on `127.0.0.1:9223`; if needed it should auto-repair by relaunching the canonical runtime before attach.
     2. Use `"<skill-dir>/scripts/auth-cdp"` for direct CDP auth actions on that same dedicated debug endpoint.
        Prefer selecting the correct page explicitly when more than one tab exists instead of assuming the first page target.
     3. Prefer this command set:
@@ -30,5 +31,6 @@ interface:
        - `"<skill-dir>/scripts/auth-cdp" type --selector "<css>" --text "<text>"`
        - `"<skill-dir>/scripts/auth-cdp" press-key --key "Enter"`
     4. Do not auto-fill credentials directly.
-    5. Preserve the same Chrome process, single dedicated Chrome window, and profile state for follow-up auth calls.
+    5. Preserve the same Chrome process, debug endpoint, and profile state for follow-up auth calls, and keep actions pinned to the same selected or bound page even if multiple dedicated-profile windows are open.
+    6. For manual login-state prep or user-created Chrome Web Apps, instruct the user to enter the profile through `Agent Profile Chrome` so the work lands in the same dedicated `agent-profile` runtime that auth later reuses.
   allow_implicit_invocation: true

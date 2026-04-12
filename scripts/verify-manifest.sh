@@ -117,25 +117,25 @@ check_wrapper_targets() {
     log_fail "resolve_project_root helper must be executable"
   fi
 
-  if rg -Fq 'exec "$SCRIPT_DIR/../../../runtime/chrome-use/scripts/open_url.sh" "$@"' "$SKILLS_ROOT/chrome-inspect/scripts/open_url.sh"; then
-    log_ok "chrome-inspect open_url wrapper target"
+  if rg -Fq 'resolve_runtime_root.sh' "$SKILLS_ROOT/chrome-inspect/scripts/open_url.sh" && rg -Fq 'exec "$RUNTIME_ROOT/scripts/open_url.sh" "$@"' "$SKILLS_ROOT/chrome-inspect/scripts/open_url.sh"; then
+    log_ok "chrome-inspect open_url wrapper resolves shared runtime"
   else
     log_fail "chrome-inspect open_url wrapper target is incorrect"
   fi
 
-  if rg -Fq 'exec node "$SCRIPT_DIR/../../../runtime/chrome-use/scripts/inspect_capture.mjs" "$@"' "$SKILLS_ROOT/chrome-inspect/scripts/inspect-capture"; then
+  if rg -Fq 'resolve_runtime_root.sh' "$SKILLS_ROOT/chrome-inspect/scripts/inspect-capture" && rg -Fq 'exec node "$RUNTIME_ROOT/scripts/inspect_capture.mjs" "$@"' "$SKILLS_ROOT/chrome-inspect/scripts/inspect-capture"; then
     log_ok "chrome-inspect inspect-capture target"
   else
     log_fail "chrome-inspect inspect-capture target is incorrect"
   fi
 
-  if rg -Fq 'exec "$SCRIPT_DIR/../../../runtime/chrome-use/scripts/open_url.sh" "$@"' "$SKILLS_ROOT/chrome-auth/scripts/open_url.sh"; then
+  if rg -Fq 'resolve_runtime_root.sh' "$SKILLS_ROOT/chrome-auth/scripts/open_url.sh" && rg -Fq 'exec "$RUNTIME_ROOT/scripts/open_url.sh" "$@"' "$SKILLS_ROOT/chrome-auth/scripts/open_url.sh"; then
     log_ok "chrome-auth open_url wrapper target"
   else
     log_fail "chrome-auth open_url wrapper target is incorrect"
   fi
 
-  if rg -Fq 'exec node "$SCRIPT_DIR/../../../runtime/chrome-use/scripts/auth_cdp.mjs" "$@"' "$SKILLS_ROOT/chrome-auth/scripts/auth-cdp"; then
+  if rg -Fq 'resolve_runtime_root.sh' "$SKILLS_ROOT/chrome-auth/scripts/auth-cdp" && rg -Fq 'exec node "$RUNTIME_ROOT/scripts/auth_cdp.mjs" "$@"' "$SKILLS_ROOT/chrome-auth/scripts/auth-cdp"; then
     log_ok "chrome-auth auth-cdp target"
   else
     log_fail "chrome-auth auth-cdp target is incorrect"
@@ -198,22 +198,32 @@ check_forbidden_references() {
 
 check_install_layout() {
   local install_script="$1"
-  local env_var_name="$2"
-  local target_root="$TMP_ROOT/$install_script"
+  local target_kind="$2"
+  local home_root="$TMP_ROOT/home-${target_kind}"
+  local install_root="$home_root/.chrome-use"
+  local target_root
 
-  rm -rf "$target_root"
-  mkdir -p "$target_root"
+  rm -rf "$home_root"
+  mkdir -p "$home_root"
 
-  if [[ "$env_var_name" == AGENT_SKILLS_ROOT ]]; then
-    AGENT_SKILLS_ROOT="$target_root" bash "$REPO_ROOT/$install_script" >/dev/null
-  else
-    CODEX_SKILLS_ROOT="$target_root" bash "$REPO_ROOT/$install_script" >/dev/null
-  fi
+  case "$target_kind" in
+    generic) target_root="$home_root/.agents/skills" ;;
+    codex) target_root="$home_root/.codex/skills" ;;
+    *)
+      log_fail "Unknown target kind for $install_script: $target_kind"
+      return
+      ;;
+  esac
+
+  HOME="$home_root" \
+    CHROME_USE_INSTALL_ROOT="$install_root" \
+    CHROME_USE_INSTALL_SKIP_PREFLIGHT=1 \
+    bash "$REPO_ROOT/$install_script" --non-interactive --yes >/dev/null
 
   installed=()
   while IFS= read -r -d '' entry; do
     installed+=("${entry##*/}")
-  done < <(find "$target_root" -mindepth 1 -maxdepth 1 -type l -name 'chrome-*' -print0)
+  done < <(find "$target_root" -mindepth 1 -maxdepth 1 -type d -name 'chrome-*' -print0)
 
   if (( ${#installed[@]} != 2 )); then
     log_fail "$install_script installs ${#installed[@]} command dirs, expected 2"
@@ -251,6 +261,38 @@ check_install_layout() {
   else
     log_ok "$install_script does not install a public chrome-use skill"
   fi
+
+  if [[ -L "$target_root/chrome-inspect" || -L "$target_root/chrome-auth" ]]; then
+    log_fail "$install_script must materialize copied skill dirs, not symlinks"
+  else
+    log_ok "$install_script materializes copied skill dirs"
+  fi
+
+  if [[ ! -f "$install_root/install-manifest.json" ]]; then
+    log_fail "$install_script must write install-manifest.json"
+  else
+    log_ok "$install_script writes install-manifest.json"
+  fi
+
+  if [[ ! -d "$install_root/dist/runtime/chrome-use" ]]; then
+    log_fail "$install_script must stage shared runtime under dist"
+  else
+    log_ok "$install_script stages shared runtime under dist"
+  fi
+
+  if [[ "$target_kind" == "codex" ]]; then
+    if [[ -f "$target_root/chrome-inspect/agents/openai.yaml" && -f "$target_root/chrome-auth/agents/openai.yaml" ]]; then
+      log_ok "$install_script keeps Codex metadata for codex target"
+    else
+      log_fail "$install_script must keep Codex metadata for codex target"
+    fi
+  else
+    if [[ -d "$target_root/chrome-inspect/agents" || -d "$target_root/chrome-auth/agents" ]]; then
+      log_fail "$install_script must omit Codex metadata for non-codex targets"
+    else
+      log_ok "$install_script omits Codex metadata for non-codex targets"
+    fi
+  fi
 }
 
 check_skill_metadata() {
@@ -276,8 +318,8 @@ main() {
   require_dir "$SKILLS_ROOT/chrome-auth"
   require_dir "$SKILLS_ROOT/chrome-inspect"
 
-  check_install_layout "install/install-agent-skill.sh" AGENT_SKILLS_ROOT
-  check_install_layout "install/install-codex-skill.sh" CODEX_SKILLS_ROOT
+  check_install_layout "install/install-agent-skill.sh" generic
+  check_install_layout "install/install-codex-skill.sh" codex
   check_skill_metadata
   check_startup_url_resolution
   check_wrapper_targets

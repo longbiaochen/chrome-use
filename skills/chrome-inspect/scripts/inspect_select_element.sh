@@ -9,5 +9,6 @@ fi
 PROJECT_ROOT="$1"
 shift
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec node "$SCRIPT_DIR/../../../runtime/chrome-use/scripts/inspect_capture.mjs" once --project-root "$PROJECT_ROOT" "$@"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+RUNTIME_ROOT="$("$SCRIPT_DIR/resolve_runtime_root.sh")"
+exec node "$RUNTIME_ROOT/scripts/inspect_capture.mjs" once --project-root "$PROJECT_ROOT" "$@"

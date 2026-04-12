@@ -7,7 +7,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { assertDedicatedBrowserOwnership, getDefaultDebugUrl } from "./inspect_runtime.mjs";
+import { ensureDedicatedBrowserReady, getDefaultDebugUrl } from "./inspect_runtime.mjs";
 
 const DEFAULT_ACTION_TIMEOUT_MS = 5000;
 const DEFAULT_WAIT_TIMEOUT_MS = 10000;
@@ -1070,7 +1070,7 @@ async function main() {
     }
 
     const debugUrl = flags["browser-url"] || getDefaultDebugUrl();
-    await assertDedicatedBrowserOwnership(debugUrl);
+    await ensureDedicatedBrowserReady(debugUrl);
     const pageId = flags["page-id"] || "";
     const bindingId = flags["binding-id"] || "";
     let result;

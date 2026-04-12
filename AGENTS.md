@@ -24,7 +24,9 @@
   - profile dir: `~/.chrome-use/agent-profile`
   - state dir: `~/.chrome-use/state`
   - debug endpoint: `http://127.0.0.1:9223`
-- Keep the dedicated profile runtime contract strict: one profile-owner process on `127.0.0.1:9223`, and one dedicated profile window on macOS.
+- Keep the dedicated profile runtime contract strict: one profile-owner process on `127.0.0.1:9223`, with window concurrency allowed on the same dedicated profile when threads are pinned to different targets.
+- Before any public `chrome-use` operation attaches to Chrome, run the canonical dedicated-profile preflight and auto-repair path first; refuse to attach if the endpoint still is not owned by `agent-profile` on `127.0.0.1:9223`.
+- The supported manual entrypoint for users is `Agent Profile Chrome`; use it when the user needs to prepare login state or create a Chrome Web App that should live in the dedicated profile.
 - For `/chrome-inspect`, resolve startup URL in this order: explicit user URL → `CHROME_INSPECT_PROJECT_ROOT` docs webapp entry → inferred current-repo docs webapp entry when inspect auto-start is enabled → `CHROME_USE_DEFAULT_WEBAPP_URL` → `about:blank`.
 - If `CHROME_INSPECT_AUTO_START_WEBAPP=1` and `CHROME_INSPECT_PROJECT_ROOT` are set, `runtime/chrome-use/scripts/open_url.sh` should auto-start the local project web app before attaching Chrome.
 - If inspect auto-start is enabled and `CHROME_INSPECT_PROJECT_ROOT` is unset, the shared runtime should infer the local project root from the current working directory or git root before falling back.

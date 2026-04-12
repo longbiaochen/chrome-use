@@ -11,11 +11,12 @@ Why:
   - durable `workflowId`-bound selections
   - `current-selection.json` and `selection-history.jsonl` recovery
   - `latest` fast path
-  - strict single dedicated-profile window contract on macOS
+  - strict single dedicated-profile owner-process contract with target-level workflow isolation
 
 Current policy:
 
 - Keep direct CDP as the public default for `chrome-inspect` and `chrome-auth`.
+- Keep the canonical runtime fixed to `agent-profile` on `127.0.0.1:9223`; public entrypoints must preflight and, when possible, auto-repair back to that dedicated runtime before attach.
 - Treat Chrome DevTools MCP as a capability baseline and experimental comparison target.
 - Do not require public skill users to install or configure an MCP server.
 

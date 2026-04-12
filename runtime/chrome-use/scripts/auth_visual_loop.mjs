@@ -878,7 +878,8 @@ async function assertDedicatedProfile(debugUrl) {
   assertCondition(doctor.includes("Profile: /Users/longbiao/.chrome-use/agent-profile"), "Doctor did not report the canonical agent profile.", doctor);
   assertCondition(doctor.includes("Debug URL: http://127.0.0.1:9223"), "Doctor did not report the canonical debug URL.", doctor);
   assertCondition(doctor.includes("Dedicated PID count: 1"), "Doctor did not report a single dedicated profile owner.", doctor);
-  assertCondition(doctor.includes("Window count: 1"), "Doctor did not report a single dedicated window.", doctor);
+  assertCondition(doctor.includes("Window count:"), "Doctor did not report the dedicated window count.", doctor);
+  assertCondition(doctor.includes("Status: dedicated profile is ready"), "Doctor did not report a ready dedicated profile.", doctor);
 }
 
 async function main() {

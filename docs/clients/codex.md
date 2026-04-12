@@ -10,14 +10,16 @@ Codex supports the generic skill payload plus optional metadata in installed ski
 Install options:
 
 ```bash
-bash install/install-agent-skill.sh
+bash install/install.sh
 ```
 
 or:
 
 ```bash
-bash install/install-codex-skill.sh
+bash install/install.sh --target codex
 ```
+
+The unified installer detects Codex, recommends `codex + generic`, and materializes public skills into `~/.codex/skills/` while staging the managed runtime under `~/.chrome-use/dist/`.
 
 This repo intentionally exposes only two explicit commands: `chrome-inspect` and `chrome-auth`.
 `/chrome` and `/inspect` are not registered command selectors.
@@ -32,29 +34,45 @@ Both public skills are also allowed to trigger implicitly when the user's reques
 
 For local-project inspect work, omitting the URL should not skip repo lookup. The shared runtime now infers the project root from the current working directory or git root before falling back to `about:blank`.
 
-If you want Codex to use the same dedicated profile path as an existing local setup:
+Codex should use the canonical dedicated runtime unless there is an explicit local override requirement:
 
 ```bash
-export CHROME_USE_PROFILE_DIR="$HOME/.codex/chrome-use-profile"
+export CHROME_USE_PROFILE_DIR="$HOME/.chrome-use/agent-profile"
+export CHROME_USE_DEBUG_PORT="9223"
 ```
+
+Public `chrome-inspect` and `chrome-auth` flows now always run a strict preflight before attaching:
+
+- require the canonical `agent-profile` on `127.0.0.1:9223`
+- require exactly one owning Chrome process for that dedicated profile
+- auto-repair by launching/reusing the canonical runtime when the endpoint is missing or mismatched
+- hard-block if the endpoint still resolves to the wrong profile, wrong port, or multiple owner processes after repair
 
 Typical inspect command flow:
 
 ```bash
-CHROME_USE_PROFILE_DIR="$HOME/.codex/chrome-use-profile" \
+CHROME_USE_PROFILE_DIR="$HOME/.chrome-use/agent-profile" \
   bash skills/chrome-inspect/scripts/open_url.sh "http://127.0.0.1:8000/"
-CHROME_USE_PROFILE_DIR="$HOME/.codex/chrome-use-profile" \
+CHROME_USE_PROFILE_DIR="$HOME/.chrome-use/agent-profile" \
   skills/chrome-inspect/scripts/inspect-capture begin --project-root "/path/to/repo"
 ```
+
+For manual login-state preparation or user-created Chrome Web Apps, install and use the dedicated launcher:
+
+```bash
+bash scripts/install-agent-profile-chrome-app.sh
+```
+
+This creates `Agent Profile Chrome`, which always opens the same canonical dedicated profile/debug toolchain that Codex will later reuse for auth and inspect work.
 
 Recommended verification for public skills:
 
 1. Reinstall/update skills:
-   `bash install/install-codex-skill.sh`
+   `bash install/install.sh --target codex`
 2. Resolve each public command from the installed skill directory, not from the repo root `scripts/` directory. The skill entrypoints are `~/.codex/skills/chrome-inspect/scripts/...` and `~/.codex/skills/chrome-auth/scripts/...` after install.
 3. Send `/chrome-inspect` in chat.
 4. Chrome session is opened through the installed skill's `scripts/open_url.sh` with the resolved startup URL, and the local project web app is auto-started first when `CHROME_INSPECT_PROJECT_ROOT` is configured or the current repo can be inferred as the local project.
-   Reuse keeps the dedicated `agent-profile` on a single Chrome window and opens a new tab on that running instance.
+   Reuse keeps the dedicated `agent-profile` on the same owner process and opens a new tab on that running instance.
    Reusing an existing matching target no longer activates that tab by default; set `CHROME_USE_ACTIVATE_EXISTING_TARGET=1` only for explicit operator-facing flows that must bring it forward.
    If the expected preview port is already listening but the target URL is still unreachable, the runtime should stop immediately with a listener-blocker error instead of starting another server.
 5. The runtime should prioritize the freshly opened target instead of attaching unrelated tabs.
@@ -75,4 +93,4 @@ Recommended verification for public skills:
 13. Reply with a concrete edit instruction.
 14. Confirm returned `phase=ready_to_apply` after `~/.codex/skills/chrome-inspect/scripts/inspect-capture apply --workflow-id "<workflowId>" --instruction "<user instruction>"`.
 
-For `/chrome-auth`, send the explicit auth URL and then use `~/.codex/skills/chrome-auth/scripts/auth-cdp` for login/authorization actions while keeping the same dedicated profile, debug endpoint, and single dedicated Chrome window. Prefer `list-pages` plus `bind-page --page-id "<id>"` when more than one tab is open, then keep passing `--binding-id "<binding-id>"` so every DOM action stays pinned to that tab instead of inheriting an endpoint-wide selected page.
+For `/chrome-auth`, send the explicit auth URL and then use `~/.codex/skills/chrome-auth/scripts/auth-cdp` for login/authorization actions while keeping the same dedicated profile and debug endpoint. Prefer `list-pages` plus `bind-page --page-id "<id>"` when more than one tab or window is open, then keep passing `--binding-id "<binding-id>"` so every DOM action stays pinned to that tab instead of inheriting an endpoint-wide selected page.

@@ -63,7 +63,7 @@ That design matters:
 - the runtime can route selections and workflow state deterministically by `workflowId`, `captureToken`, and bound `targetId`
 - user selections stay durable in persisted state instead of disappearing into one-off chat messages
 
-On macOS, the launcher keeps the dedicated Chrome instance in the background so agent activity does not steal focus. The dedicated `agent-profile` must remain a single-window Chrome instance; other Chrome windows under other profiles are allowed.
+On macOS, the launcher keeps the dedicated Chrome instance in the background so agent activity does not steal focus. The dedicated `agent-profile` still has one owner process and one canonical debug endpoint, but it may keep more than one Chrome window open when different agent threads are pinned to different tabs or targets.
 
 ## 🥊 Where chrome-use fits
 
@@ -97,20 +97,28 @@ Both public skills may be invoked explicitly or implicitly.
 
 ## Fast install
 
-Neutral install target:
+Unified installer:
 
 ```bash
 git clone https://github.com/longbiaochen/chrome-use.git
 cd chrome-use
-bash install/install-agent-skill.sh
+bash install/install.sh
 ```
 
-Codex-native install target:
+The installer stages a managed runtime under `~/.chrome-use`, materializes public skills into the selected agent directories, and records the install in `~/.chrome-use/install-manifest.json`.
+
+Non-interactive examples:
 
 ```bash
-git clone https://github.com/longbiaochen/chrome-use.git
-cd chrome-use
+bash install/install.sh --target codex --install-chrome-app --non-interactive --yes
+bash install/install.sh --target generic --non-interactive --yes
+```
+
+Compatibility wrappers still exist:
+
+```bash
 bash install/install-codex-skill.sh
+bash install/install-agent-skill.sh
 ```
 
 After install, exposed skills are:
@@ -120,7 +128,7 @@ After install, exposed skills are:
 - `~/.codex/skills/chrome-inspect`
 - `~/.codex/skills/chrome-auth`
 
-`chrome-use` itself is not exposed as a standalone skill or command. Shared runtime code lives under `runtime/chrome-use/`.
+`chrome-use` itself is not exposed as a standalone skill or command. Installed shared runtime code lives under `~/.chrome-use/dist/runtime/chrome-use/`.
 
 ## Direct CDP workflows
 
@@ -158,9 +166,9 @@ For concurrency-safe auth automation, prefer `bind-page` once and then pass `--b
 
 | Client | Install path | Status | Notes |
 | --- | --- | --- | --- |
-| Codex | `~/.agents/skills/` or `~/.codex/skills/` | Best supported | Optional `agents/openai.yaml` metadata included; public skills may trigger implicitly |
-| Claude-compatible clients | `~/.agents/skills/` | Compatible | Client-specific wrappers may use folder-level linking |
-| Generic skills-compatible agents | `.agents/skills/` | Compatible | Uses plain `SKILL.md` plus shared runtime wrappers |
+| Codex | `~/.codex/skills/` | Best supported | Installed through the unified installer; keeps optional `agents/openai.yaml` metadata |
+| Claude-compatible clients | `~/.claude/skills/` or `~/.agents/skills/` | Compatible | `.agents/skills` remains the neutral target; Claude-native path is optional |
+| Generic skills-compatible agents | `~/.agents/skills/` | Compatible | Uses plain `SKILL.md`; no Codex-specific metadata is copied |
 
 ## Repository layout
 
@@ -189,14 +197,18 @@ The public repo is client-neutral by default:
 
 - profile dir: `~/.chrome-use/agent-profile`
 - state dir: `~/.chrome-use/state`
+- install root: `~/.chrome-use`
+- managed dist root: `~/.chrome-use/dist`
 - debug URL: `http://127.0.0.1:9223`
 
 Runtime contract:
 
 - exactly one Chrome process owns `~/.chrome-use/agent-profile`
 - that process exposes `127.0.0.1:9223`
-- the dedicated profile has exactly one Chrome window on macOS
 - follow-up launches reuse that same instance by opening a new tab there
+- multiple windows may exist on macOS, but target ownership must stay isolated per workflow / binding
+- every public inspect/auth attach first runs the canonical dedicated-profile preflight and auto-repair path
+- if the debug endpoint is still not owned by `agent-profile` after auto-repair, the runtime blocks instead of silently attaching elsewhere
 
 Override with environment variables:
 
@@ -204,6 +216,14 @@ Override with environment variables:
 export CHROME_USE_PROFILE_DIR="$HOME/.codex/chrome-use-profile"
 export CHROME_USE_DEBUG_PORT="9223"
 ```
+
+Manual user entrypoint on macOS:
+
+```bash
+bash scripts/install-agent-profile-chrome-app.sh
+```
+
+That installs a Dock item named `Agent Profile Chrome`. Open that app whenever you want to prepare cookies, keep long-lived login state, or create Chrome Web Apps that should live in the dedicated `agent-profile`. Unlike the background agent launcher, this user-facing entrypoint explicitly brings the dedicated-profile Chrome process to the foreground.
 
 `CHROME_USE_DEFAULT_WEBAPP_URL` is used as optional URL fallback before `about:blank`.
 For `/chrome-inspect`, set `CHROME_INSPECT_PROJECT_ROOT` (for example `/Users/longbiao/Projects/home-page`) to let the helper auto-resolve the project's docs web app entry.

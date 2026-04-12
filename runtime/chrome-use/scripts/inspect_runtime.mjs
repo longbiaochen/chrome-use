@@ -553,6 +553,33 @@ export function getDefaultDebugUrl() {
   return `http://${host}:${port}`;
 }
 
+export async function ensureDedicatedBrowserReady(
+  debugUrl = getDefaultDebugUrl(),
+  startupUrl = "",
+) {
+  const parsed = new URL(debugUrl);
+  const ensureProfileScript = fileURLToPath(new URL("./ensure_profile.sh", import.meta.url));
+  const env = {
+    ...process.env,
+    CHROME_USE_DEBUG_HOST: parsed.hostname,
+    CHROME_USE_DEBUG_PORT: parsed.port || (parsed.protocol === "https:" ? "443" : "80"),
+  };
+
+  try {
+    await execFile(
+      "bash",
+      [ensureProfileScript, startupUrl],
+      { env },
+    );
+  } catch (error) {
+    const output = `${error.stdout || ""}${error.stderr || ""}`.trim();
+    const message = output || error.message || "Dedicated profile preflight failed.";
+    throw new Error(`Unable to prepare the canonical dedicated profile on ${debugUrl}: ${message}`);
+  }
+
+  await assertDedicatedBrowserOwnership(debugUrl);
+}
+
 export async function assertDedicatedBrowserOwnership(debugUrl = getDefaultDebugUrl()) {
   const parsed = new URL(debugUrl);
   const doctorScript = fileURLToPath(new URL("./doctor.sh", import.meta.url));
@@ -3646,7 +3673,7 @@ export async function connectInspectRuntime({
   startupUrl = "",
 } = {}) {
   const attachStartedAt = timingNow();
-  await assertDedicatedBrowserOwnership(debugUrl);
+  await ensureDedicatedBrowserReady(debugUrl, startupUrl);
   const version = await fetchJson(`${debugUrl}/json/version`);
   const wsUrl = version.webSocketDebuggerUrl;
   if (!wsUrl) {

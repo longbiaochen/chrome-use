@@ -63,7 +63,7 @@ chrome-use 使用一个专用浏览器运行时，而不是直接接管你平时
 - 运行时可以基于 `workflowId`、`captureToken` 和绑定的 `targetId` 对选择事件和工作流状态做确定性路由
 - 用户点选不会丢在一次性聊天消息里，而是会进入可恢复的持久化状态
 
-在 macOS 上，启动器会尽量让专用 Chrome 实例留在后台，避免 agent 操作抢焦点。专用 `agent-profile` 在 macOS 上必须保持单窗口；其他 profile 下的 Chrome 窗口可以同时存在。
+在 macOS 上，启动器会尽量让专用 Chrome 实例留在后台，避免 agent 操作抢焦点。专用 `agent-profile` 仍然保持单一 owner process 和固定 debug endpoint，但当不同 thread 分别绑定到不同 target 时，可以在同一个 dedicated profile 下保留多个窗口。
 
 ## 🥊 chrome-use 的定位
 
@@ -97,20 +97,28 @@ chrome-use 刻意比这些工具更窄。窄反而是优势：它不是试图包
 
 ## Fast install
 
-通用安装目标：
+统一安装入口：
 
 ```bash
 git clone https://github.com/longbiaochen/chrome-use.git
 cd chrome-use
-bash install/install-agent-skill.sh
+bash install/install.sh
 ```
 
-Codex 原生安装目标：
+安装器会先把托管运行时发布到 `~/.chrome-use`，再把公共 skills 物化复制到你选定的 agent 目录，并把结果写入 `~/.chrome-use/install-manifest.json`。
+
+非交互示例：
 
 ```bash
-git clone https://github.com/longbiaochen/chrome-use.git
-cd chrome-use
+bash install/install.sh --target codex --install-chrome-app --non-interactive --yes
+bash install/install.sh --target generic --non-interactive --yes
+```
+
+兼容包装入口仍然保留：
+
+```bash
 bash install/install-codex-skill.sh
+bash install/install-agent-skill.sh
 ```
 
 安装后暴露的 skills 为：
@@ -120,7 +128,7 @@ bash install/install-codex-skill.sh
 - `~/.codex/skills/chrome-inspect`
 - `~/.codex/skills/chrome-auth`
 
-`chrome-use` 本身不会作为独立 skill 或命令暴露。共享运行时代码位于 `runtime/chrome-use/`。
+`chrome-use` 本身不会作为独立 skill 或命令暴露。安装后的共享运行时代码位于 `~/.chrome-use/dist/runtime/chrome-use/`。
 
 ## Direct CDP workflows
 
@@ -158,9 +166,9 @@ skills/chrome-auth/scripts/auth-cdp screenshot --output /tmp/auth.png
 
 | Client | 安装路径 | 状态 | 说明 |
 | --- | --- | --- | --- |
-| Codex | `~/.agents/skills/` 或 `~/.codex/skills/` | 支持最好 | 包含可选的 `agents/openai.yaml` 元数据；公共 skills 可隐式触发 |
-| Claude-compatible clients | `~/.agents/skills/` | 兼容 | 客户端特定包装层可能使用目录级链接 |
-| Generic skills-compatible agents | `.agents/skills/` | 兼容 | 使用纯 `SKILL.md` 加共享运行时包装脚本 |
+| Codex | `~/.codex/skills/` | 支持最好 | 通过统一安装器安装；保留可选的 `agents/openai.yaml` 元数据 |
+| Claude-compatible clients | `~/.claude/skills/` 或 `~/.agents/skills/` | 兼容 | `.agents/skills` 仍是中立目标，Claude 原生目录是可选兼容层 |
+| Generic skills-compatible agents | `~/.agents/skills/` | 兼容 | 只复制纯 `SKILL.md` 能力，不带 Codex 专属元数据 |
 
 ## Repository layout
 
@@ -189,14 +197,18 @@ skills/chrome-auth/scripts/auth-cdp screenshot --output /tmp/auth.png
 
 - profile 目录：`~/.chrome-use/agent-profile`
 - state 目录：`~/.chrome-use/state`
+- install root：`~/.chrome-use`
+- 托管 dist 根目录：`~/.chrome-use/dist`
 - debug URL：`http://127.0.0.1:9223`
 
 运行时契约：
 
 - 只能有一个 Chrome 进程拥有 `~/.chrome-use/agent-profile`
 - 该进程必须暴露 `127.0.0.1:9223`
-- 在 macOS 上，该专用 profile 必须只有一个 Chrome 窗口
-- 后续启动必须复用同一个实例，并在该实例中打开新标签页
+- 所有公开的 inspect/auth/runtime 入口在附着前都会先做 canonical dedicated-profile preflight；如果当前不是 `agent-profile + 9223 + 单一 owner process`，运行时会先自动修复，再决定是否继续
+- 后续启动必须复用同一个 owner process，并在该实例中打开新标签页
+- 允许多个窗口，但工作流必须继续依赖 `targetId` / `bindingId` 绑定目标页；不再支持把“单窗口”当作契约本身
+- 如果 canonical endpoint 在自动修复后仍不属于 `agent-profile`，运行时会直接阻断，而不是静默降级到默认 profile 或错误端口
 
 可通过环境变量覆盖：
 
@@ -211,6 +223,14 @@ export CHROME_USE_DEBUG_PORT="9223"
 当设置 `CHROME_INSPECT_AUTO_START_WEBAPP=1` 时，`open_url.sh` 也会在附加 Chrome 前尝试启动对应的本地 web app。
 这条 auto-start 路径仅在目标 URL 被解析为对应本地项目的 `localhost` 或 `127.0.0.1` 地址时生效。
 如果预期的 preview 端口已经在监听，但目标 URL 仍不可达，`open_url.sh` 会直接报出阻塞监听信息，而不是再启动第二个服务。
+
+在 macOS 上，如果你希望手动准备登录态，或直接从 dedicated profile 创建 `x.com` / `github.com` 等 Chrome Web App，请安装并使用专用 Dock 入口：
+
+```bash
+bash scripts/install-agent-profile-chrome-app.sh
+```
+
+这会新增 `Agent Profile Chrome` app / Dock item。它始终以 canonical `agent-profile + 9223` 打开 Chrome，供用户手动进入同一个 dedicated profile，再在其中创建自己的 Web App。和后台 agent launcher 不同，这个用户入口会明确把 dedicated-profile Chrome 进程切到前台。
 
 如果你的 Codex 环境已经统一使用自定义专用 profile 路径：
 

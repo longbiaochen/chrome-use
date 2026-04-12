@@ -16,8 +16,9 @@ Command entrypoints live in this skill's own `scripts/` directory. Resolve the d
    - `CHROME_USE_DEFAULT_WEBAPP_URL`
    - `about:blank`
 2. Start or reuse Chrome in dedicated profile via `bash "<skill-dir>/scripts/open_url.sh"`.
-   Reuse must open a new tab on the running dedicated-profile instance instead of creating a second dedicated window.
-3. Keep the same debug endpoint, profile, and single dedicated Chrome window for the entire auth flow.
+   Reuse must open a new tab on the running dedicated-profile instance instead of starting a second dedicated-profile owner process.
+   This public entrypoint must first preflight the canonical dedicated runtime and only continue when the endpoint is owned by `agent-profile` on `127.0.0.1:9223`; if needed it should auto-repair by relaunching the canonical runtime before attach.
+3. Keep the same debug endpoint and profile for the entire auth flow. Multiple dedicated-profile windows are allowed, but auth actions must stay pinned to the same bound page.
 4. Use the direct CDP auth helper for operator-guided navigation, page selection, structured snapshots, and DOM interaction:
    - `"<skill-dir>/scripts/auth-cdp" status`
    - `"<skill-dir>/scripts/auth-cdp" list-pages`
@@ -39,7 +40,7 @@ Command entrypoints live in this skill's own `scripts/` directory. Resolve the d
 ## Tools
 
 ### `<skill-dir>/scripts/open_url.sh`
-Starts or reuses the dedicated profile, enforces the single-window invariant, and opens the workflow URL on that dedicated instance.
+Starts or reuses the dedicated profile, preserves the single-owner runtime contract, and opens the workflow URL on that dedicated instance.
 
 ### `<skill-dir>/scripts/auth-cdp`
 Runs direct CDP commands against the dedicated Chrome debug endpoint for page-aware status, navigation, structured snapshots, screenshots, and targeted DOM actions.
@@ -47,6 +48,8 @@ Runs direct CDP commands against the dedicated Chrome debug endpoint for page-aw
 ## Notes
 
 - Keep authentication context in the same Chrome profile across steps so cookies/storage are preserved.
+- The only supported dedicated profile for public workflows is `agent-profile` on `127.0.0.1:9223`.
 - In multi-tab or multi-agent flows, prefer `bind-page` once and then keep using `--binding-id` so later DOM commands stay pinned to the same tab instead of inheriting endpoint-wide selected-page state.
-- Other Chrome windows may exist under other profiles, but the dedicated `agent-profile` must remain a single-window instance.
+- Other Chrome windows may exist under other profiles, and the dedicated `agent-profile` may also keep multiple windows open, but there must still be only one owner process for the dedicated profile and DOM actions should stay pinned via `bindingId`.
+- For manual login-state prep or user-created Chrome Web Apps, enter the profile through `Agent Profile Chrome` so auth state is created inside the same dedicated profile/runtime that agents will later reuse.
 - Shared runtime helpers live under `runtime/chrome-use/` in this repository; this skill only exposes the public auth workflow entrypoints.
