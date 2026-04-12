@@ -60,7 +60,7 @@ chrome-use 使用一个专用浏览器运行时，而不是直接接管你平时
 - 鉴权状态可以稳定复用，跨回合保留
 - inspect 与 auth 共用同一个浏览器世界
 - agent 可以保持一个低开销的高速连接，而不是反复启动新浏览器
-- 运行时可以基于 `workflowId` 和 `captureToken` 对选择事件和工作流状态做确定性路由
+- 运行时可以基于 `workflowId`、`captureToken` 和绑定的 `targetId` 对选择事件和工作流状态做确定性路由
 - 用户点选不会丢在一次性聊天消息里，而是会进入可恢复的持久化状态
 
 在 macOS 上，启动器会尽量让专用 Chrome 实例留在后台，避免 agent 操作抢焦点。专用 `agent-profile` 在 macOS 上必须保持单窗口；其他 profile 下的 Chrome 窗口可以同时存在。
@@ -132,6 +132,8 @@ skills/chrome-inspect/scripts/inspect-capture begin --project-root "/path/to/rep
 skills/chrome-inspect/scripts/inspect-capture await --workflow-id "<workflowId>"
 ```
 
+`inspect-capture begin` 现在会同时返回 `workflowId` 和绑定后的 `targetId`，后续 `await` / `apply` 会固定落在同一个标签页上，即使同一个 debug endpoint 上还有别的 agent 线程。
+
 或使用一键辅助脚本：
 
 ```bash
@@ -144,10 +146,13 @@ skills/chrome-inspect/scripts/inspect_select_element.sh "/path/to/repo"
 bash skills/chrome-auth/scripts/open_url.sh "https://example.com/login"
 skills/chrome-auth/scripts/auth-cdp status
 skills/chrome-auth/scripts/auth-cdp list-pages
+skills/chrome-auth/scripts/auth-cdp bind-page --page-id "<page-id>"
 skills/chrome-auth/scripts/auth-cdp select-page --page-id "<page-id>"
-skills/chrome-auth/scripts/auth-cdp snapshot --mode a11y
+skills/chrome-auth/scripts/auth-cdp snapshot --mode a11y --binding-id "<binding-id>"
 skills/chrome-auth/scripts/auth-cdp screenshot --output /tmp/auth.png
 ```
+
+如果是多标签页或多 agent 并发的 auth 自动化，优先先执行一次 `bind-page`，随后所有 DOM 操作都传 `--binding-id`，不要再依赖 endpoint 级别的默认 selected page。
 
 ## Client support
 
@@ -221,7 +226,8 @@ export CHROME_USE_DEBUG_PORT="9223"
 1. 在聊天中运行 `/chrome-inspect`。
 2. 让 `scripts/open_url.sh` 打开 Chrome；当配置了 `CHROME_INSPECT_PROJECT_ROOT` 或能从当前仓库推断出本地项目时，它会优先自动启动本地 web app。
    如果专用 profile 已经在运行，命令会在同一实例中复用并打开新标签页，而不是创建第二个专用窗口。
-3. 使用 `scripts/inspect-capture begin --project-root "<repo>"` 启动 capture，并保存返回的 `workflowId`。
+   如果只是复用已存在的匹配标签页，默认不会主动把该标签切到前台；只有显式设置 `CHROME_USE_ACTIVATE_EXISTING_TARGET=1` 时才会 activate。
+3. 使用 `scripts/inspect-capture begin --project-root "<repo>"` 启动 capture，并保存返回的 `workflowId` 和 `targetId`。
 4. 确认 inspect mode 已经 armed，然后在 Chrome 中点击目标元素。
    页面面板在进入时就应以 idle ready 状态注入，主按钮显示 `Press this button to inspect`。
    操作者点击该按钮后，inspect mode 才应真正激活，按钮文字变为 `Inspecting`。
