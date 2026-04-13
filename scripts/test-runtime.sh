@@ -78,12 +78,27 @@ cat >"$MOCK_BIN/nohup" <<'EOF'
 if [[ -n "${MOCK_NOHUP_LOG:-}" ]]; then
   printf '%s\n' "$*" >>"$MOCK_NOHUP_LOG"
 fi
+if [[ -n "${MOCK_NOHUP_TOUCH_FILE:-}" ]]; then
+  : >"$MOCK_NOHUP_TOUCH_FILE"
+fi
 if [[ "${MOCK_NOHUP_BEHAVIOR:-noop}" == "exec" ]]; then
   exec "$@"
 fi
 exit 0
 EOF
 chmod +x "$MOCK_BIN/nohup"
+
+cat >"$MOCK_BIN/python3" <<'EOF'
+#!/usr/bin/env bash
+if [[ -n "${MOCK_NOHUP_LOG:-}" ]]; then
+  printf 'bash -lc %s\n' "${START_COMMAND_ENV:-}" >>"$MOCK_NOHUP_LOG"
+fi
+if [[ -n "${MOCK_NOHUP_TOUCH_FILE:-}" ]]; then
+  : >"$MOCK_NOHUP_TOUCH_FILE"
+fi
+exit 0
+EOF
+chmod +x "$MOCK_BIN/python3"
 
 cat >"$MOCK_BIN/lsof" <<'EOF'
 #!/usr/bin/env bash
@@ -141,6 +156,13 @@ if [[ "$last_arg" == *"/json/list" ]]; then
 fi
 
 if [[ "$last_arg" == http://* || "$last_arg" == https://* ]]; then
+  if [[ -n "${MOCK_HTTP_REACHABLE_FILE:-}" && -n "${MOCK_HTTP_REACHABLE_URL:-}" && "$last_arg" == "$MOCK_HTTP_REACHABLE_URL" ]]; then
+    if [[ -f "${MOCK_HTTP_REACHABLE_FILE}" ]]; then
+      printf '<html></html>\n'
+      exit 0
+    fi
+    exit 22
+  fi
   if [[ -n "${MOCK_HTTP_REACHABLE_URL:-}" && "$last_arg" == "$MOCK_HTTP_REACHABLE_URL" ]]; then
     printf '<html></html>\n'
     exit 0
@@ -228,7 +250,9 @@ setup_case() {
   export MOCK_LSOF_OUTPUT_FILE="$CASE_DIR/lsof.txt"
   export MOCK_LSOF_STATUS="1"
   unset MOCK_HTTP_REACHABLE_URL
+  unset MOCK_HTTP_REACHABLE_FILE
   unset MOCK_NOHUP_BEHAVIOR
+  unset MOCK_NOHUP_TOUCH_FILE
 
   : >"$MOCK_PS_FILE"
   printf '0' >"$MOCK_VERSION_COUNT_FILE"
@@ -485,6 +509,77 @@ EOF
   assert_file_lines "$MOCK_NOHUP_LOG" "0" "project webapp reachable listener does not relaunch server"
 }
 
+test_detects_node_workspace_preview_entry() {
+  setup_case
+  local project_root="$CASE_DIR/project"
+  mkdir -p "$project_root/apps/web"
+  cat >"$project_root/package.json" <<'EOF'
+{
+  "private": true,
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "dev:web": "npm --workspace @example/web run dev"
+  }
+}
+EOF
+  cat >"$project_root/package-lock.json" <<'EOF'
+{}
+EOF
+  cat >"$project_root/apps/web/package.json" <<'EOF'
+{
+  "name": "@example/web",
+  "private": true,
+  "scripts": {
+    "dev": "next dev"
+  }
+}
+EOF
+
+  local entry_url
+  entry_url="$("$RUNTIME_ROOT/scripts/project_webapp_entry.sh" "$project_root")"
+
+  assert_eq "http://127.0.0.1:3000/" "$entry_url" "workspace next dev entry resolves to localhost:3000"
+}
+
+test_starts_node_workspace_dev_server() {
+  setup_case
+  local project_root="$CASE_DIR/project"
+  local ready_file="$CASE_DIR/ready.flag"
+  mkdir -p "$project_root/apps/web"
+  cat >"$project_root/package.json" <<'EOF'
+{
+  "private": true,
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "dev:web": "npm --workspace @example/web run dev"
+  }
+}
+EOF
+  cat >"$project_root/package-lock.json" <<'EOF'
+{}
+EOF
+  cat >"$project_root/apps/web/package.json" <<'EOF'
+{
+  "name": "@example/web",
+  "private": true,
+  "scripts": {
+    "dev": "next dev"
+  }
+}
+EOF
+  export CHROME_INSPECT_AUTO_START_WEBAPP="1"
+  export CHROME_INSPECT_PROJECT_ROOT="$project_root"
+  export MOCK_HTTP_REACHABLE_URL="http://127.0.0.1:3000/"
+  export MOCK_HTTP_REACHABLE_FILE="$ready_file"
+  export MOCK_NOHUP_TOUCH_FILE="$ready_file"
+
+  run_ensure_project_webapp "http://127.0.0.1:3000/"
+
+  assert_eq "0" "$ENSURE_PROJECT_STATUS" "workspace next dev server starts successfully"
+  assert_file_lines "$MOCK_NOHUP_LOG" "1" "workspace next dev server launches once"
+  assert_contains "bash -lc npm run dev:web" "$(cat "$MOCK_NOHUP_LOG" 2>/dev/null || true)" "workspace next dev server uses root dev:web script"
+}
+
 test_inspect_capture_wrapper_targets_shared_runtime() {
   setup_case
   local mock_node_dir="$CASE_DIR/mock-node"
@@ -729,6 +824,8 @@ main() {
   test_ignores_renderer_helpers_for_process_ownership
   test_blocks_project_webapp_restart_on_port_conflict
   test_reuses_reachable_project_webapp_listener
+  test_detects_node_workspace_preview_entry
+  test_starts_node_workspace_dev_server
   test_inspect_capture_wrapper_targets_shared_runtime
   test_materialized_installed_wrappers_resolve_install_root_runtime
   test_auth_cdp_wrapper_targets_shared_runtime
