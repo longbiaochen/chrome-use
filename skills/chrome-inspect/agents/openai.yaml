@@ -16,10 +16,10 @@ interface:
        Never skip the repo lookup just because the user omitted a URL. If the request is about the current local project, treat the repo as the source of truth and let the shared runtime infer the preview URL before falling back to `about:blank`.
     2. Open Chrome in the resolved URL with:
        `bash "<skill-dir>/scripts/open_url.sh" "<resolved_url>"`
-       so the dedicated profile/debug endpoint is ready, the dedicated profile stays on one owner process, and the local docs webapp is auto-started when
+       so the Chrome/debug endpoint is ready, Chrome stays on one owner process, and the local docs webapp is auto-started when
        `CHROME_INSPECT_PROJECT_ROOT` points to a local project or the current repo can be inferred as a local project (for example
        `/Users/longbiao/Projects/home-page`). If the expected preview port is already occupied but the URL is not reachable, treat that as a blocker instead of trying to start a second server.
-       This public entrypoint must first preflight the canonical dedicated runtime and only continue when the endpoint is owned by `agent-profile` on `127.0.0.1:9223`; if needed it should auto-repair by relaunching the canonical runtime before attach.
+       This public entrypoint must first preflight the canonical managed browser runtime and only continue when the endpoint is owned by `Google Chrome for Testing` on `127.0.0.1:9223`; if needed it should auto-repair by relaunching Chrome for Testing before attach.
     3. Start direct capture with `"<skill-dir>/scripts/inspect-capture" begin --project-root "<repo>"` and store the returned `workflowId`.
     4. Wait for the operator to select an element in Chrome only after inspect mode is armed, and call
        `"<skill-dir>/scripts/inspect-capture" await --workflow-id "<workflowId>"`.
@@ -28,7 +28,7 @@ interface:
        After the operator clicks that primary action, inspect mode should become active and the button should read `Inspecting`.
        After a successful click, inspect mode should auto-exit while the panel stays visible, the primary action should change back to `Press this button to inspect`, and the page should immediately become navigable again.
        The saved-selection state should stay inside the same panel and show `Selected`, `Content`, `Page`, and `Element`.
-       Every page tab in the same dedicated profile should also keep the panel injected; tabs should default to the same idle ready state until the operator explicitly starts inspect mode there.
+       Every page tab in the same managed browser session should also keep the panel injected; tabs should default to the same idle ready state until the operator explicitly starts inspect mode there.
        If the operator clicks `Press this button to inspect` after selection or idle state, inspect mode should re-enter immediately even before a new workflow is created.
        Treat the selection as valid only if it clearly belongs to the current `workflowId` and follows a fresh operator click.
        If `await_selection` appears to return immediately with stale prior context, or the durable files only show older
@@ -50,5 +50,5 @@ interface:
     9. If a later turn asks for the latest saved selection, call `"<skill-dir>/scripts/inspect-capture" latest`.
        Do not infer "latest" from an older cached `workflowId`; later-turn recovery must come from the persisted most recent successful selection.
        Treat this as a local fast path: do not reopen Chrome, resolve startup URLs, attach the runtime, or perform extra repo/browser search before answering.
-    10. For manual login-state prep or user-created Chrome Web Apps, instruct the user to enter the profile through `Agent Profile Chrome` so the work lands in the same dedicated `agent-profile` runtime that inspect later reuses.
+    10. For manual login-state prep, instruct the user to launch the same runtime through `chrome-use-open-google-chrome` so the work lands in the same managed browser session/runtime that inspect later reuses.
   allow_implicit_invocation: true

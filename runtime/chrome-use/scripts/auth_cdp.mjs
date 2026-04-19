@@ -282,7 +282,7 @@ async function openPageSession(debugUrl, explicitPageId = "", bindingId = "") {
     allowStoredSelection: !explicitPageId && !bindingId,
   });
   if (!pageState.selectedPage?.webSocketDebuggerUrl) {
-    throw new Error(`No page target is available at ${debugUrl}. Open a page in the dedicated profile first.`);
+    throw new Error(`No page target is available at ${debugUrl}. Open a page in Google Chrome first.`);
   }
 
   if (explicitPageId || bindingId) {

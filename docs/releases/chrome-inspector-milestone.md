@@ -4,13 +4,13 @@ chrome-use now ships a full inspect-first workflow for coding agents, built to t
 
 ## What shipped
 
-- `chrome-inspect` now supports a persistent in-page inspect panel in the dedicated agent profile
+- `chrome-inspect` now supports a persistent in-page inspect panel in the managed Chrome for Testing session
 - the first real page click completes the active inspect workflow immediately
 - the selected page area is written back as structured `page`, `element`, and `content` context instead of requiring pasted links or screenshots
 - `inspect-capture await` now uses one long-lived daemon wait instead of layered reconnect/search fallback during the normal path
 - the saved-selection panel now shows `Selected`, `Content`, `Page`, and `Element`
 - `inspect-capture latest` can recover the most recent persisted selection without reopening Chrome
-- `chrome-auth` remains the companion skill for login and authorization in the same dedicated browser session
+- `chrome-auth` remains the companion skill for login and authorization in the same managed browser session
 
 ## Why this matters
 
@@ -21,7 +21,7 @@ Most browser tools are either:
 
 chrome-use is narrower and more opinionated:
 
-- one dedicated agent profile, separate from the default Chrome profile
+- one managed Chrome for Testing browser, separate from the user's real Chrome profile
 - one dedicated remote-debuggable Chrome runtime
 - one inspect workflow that maps cleanly to agent turns: `begin -> await -> apply`
 - one auth companion skill that preserves the same session state
@@ -41,7 +41,7 @@ That gives chrome-use a tighter local loop for coding agents working on real app
 - workflow routing keyed by `workflowId` and `captureToken`
 - durable selection persistence in `current-selection.json` and `selection-history.jsonl`
 - persistent toolbar injection across reloads, same-tab navigation, and same-document navigation
-- dedicated profile reuse so auth and inspect stay in the same browser world
+- managed browser reuse so auth and inspect stay in the same browser world
 
 ## Validation
 
@@ -58,7 +58,7 @@ Use this stack for launch-facing copy:
 1. pain point: what is still slow, flaky, or broken in the status quo
 2. shipped capability: what `chrome-use` now does
 3. user payoff: why the workflow is faster, cleaner, or more complete
-4. credibility proof: dedicated agent profile, direct CDP runtime, shared auth + inspect session
+4. credibility proof: managed Chrome for Testing runtime, direct CDP session, shared auth + inspect browser state
 5. CTA: try it, star it, follow it, and open PRs
 
 ## Approved X templates
@@ -68,11 +68,11 @@ Use this stack for launch-facing copy:
 We just shipped `chrome-inspect` in `chrome-use`.
 
 - faster handoff from user click to mutation-ready DOM context
-- full inspect + auth workflow in one dedicated Chrome session
-- direct CDP runtime with a dedicated agent profile, so the flow stays fast and predictable
+- full inspect + auth workflow in one managed Chrome for Testing session
+- direct CDP runtime with an isolated browser-data dir, so the flow stays fast and predictable
 
 Try it, star the repo, and tell us what to build next: https://github.com/longbiaochen/chrome-use
 
 ### Chinese template
 
-`chrome-inspect` 已经在 `chrome-use` 里正式发布：现在浏览器里的点选可以更快回到 agent 手里，直接变成可编辑的 DOM 上下文，而且 `chrome-inspect` 和 `chrome-auth` 会在同一个 dedicated agent profile 里跑完整流程，既快又稳，欢迎试用、star、follow，也欢迎直接来提 issue 和 PR：https://github.com/longbiaochen/chrome-use
+`chrome-inspect` 已经在 `chrome-use` 里正式发布：现在浏览器里的点选可以更快回到 agent 手里，直接变成可编辑的 DOM 上下文，而且 `chrome-inspect` 和 `chrome-auth` 会在同一个托管的 Chrome for Testing 会话里跑完整流程，既快又稳，欢迎试用、star、follow，也欢迎直接来提 issue 和 PR：https://github.com/longbiaochen/chrome-use

@@ -1,109 +1,30 @@
-# chrome-use Repo Instructions
+# chrome-use Maintenance Notes
 
-- This repository is the standalone public home for the `chrome-use` runtime plus its public browser skills.
-- Keep the public packaging cross-agent and cross-platform by default.
-- Treat Codex as the reference client and best-tested adapter, not the only supported client.
-- Keep the canonical public skill payloads in:
-  - [`skills/chrome-auth/SKILL.md`](./skills/chrome-auth/SKILL.md)
-  - [`skills/chrome-inspect/SKILL.md`](./skills/chrome-inspect/SKILL.md)
-- Keep Codex-specific metadata optional and isolated under:
-  - [`skills/chrome-auth/agents/openai.yaml`](./skills/chrome-auth/agents/openai.yaml)
-  - [`skills/chrome-inspect/agents/openai.yaml`](./skills/chrome-inspect/agents/openai.yaml)
-- Keep the shared runtime under [`runtime/chrome-use/`](./runtime/chrome-use/); it is internal and must not be packaged as a public skill.
-- For OpenAI, Codex, Apps SDK, or API questions, use the OpenAI developer documentation MCP server first.
-- Prefer client-neutral paths in public docs for installable commands:
-  - `~/.agents/skills/chrome-auth`
-  - `~/.agents/skills/chrome-inspect`
-  - `~/.codex/skills/chrome-auth`
-  - `~/.codex/skills/chrome-inspect`
-- `chrome-use` is a shared internal runtime, not a public skill or command.
-- Only two public skill names are exposed: `chrome-inspect` and `chrome-auth`.
-- These public skills may be used explicitly or implicitly.
-- `/chrome` and `/inspect` are intentionally unavailable as standalone commands.
-- Public defaults for this repo should remain neutral:
-  - profile dir: `~/.chrome-use/agent-profile`
-  - state dir: `~/.chrome-use/state`
-  - debug endpoint: `http://127.0.0.1:9223`
-- Keep the dedicated profile runtime contract strict: one profile-owner process on `127.0.0.1:9223`, with window concurrency allowed on the same dedicated profile when threads are pinned to different targets.
-- Before any public `chrome-use` operation attaches to Chrome, run the canonical dedicated-profile preflight and auto-repair path first; refuse to attach if the endpoint still is not owned by `agent-profile` on `127.0.0.1:9223`.
-- The supported manual entrypoint for users is `Agent Profile Chrome`; use it when the user needs to prepare login state or create a Chrome Web App that should live in the dedicated profile.
-- For `/chrome-inspect`, resolve startup URL in this order: explicit user URL → `CHROME_INSPECT_PROJECT_ROOT` docs webapp entry → inferred current-repo docs webapp entry when inspect auto-start is enabled → `CHROME_USE_DEFAULT_WEBAPP_URL` → `about:blank`.
-- If `CHROME_INSPECT_AUTO_START_WEBAPP=1` and `CHROME_INSPECT_PROJECT_ROOT` are set, `runtime/chrome-use/scripts/open_url.sh` should auto-start the local project web app before attaching Chrome.
-- If inspect auto-start is enabled and `CHROME_INSPECT_PROJECT_ROOT` is unset, the shared runtime should infer the local project root from the current working directory or git root before falling back.
-- When the expected local preview port is already listening but the target URL is unreachable, fail fast with the listener details instead of trying to start a second web server.
-- `/chrome-inspect` panel contract: default to injected idle state with primary action `Press this button to inspect`, switch to `Inspecting` only after the operator clicks the button, and keep the panel resident across same-tab navigation/reload/hash navigation.
-- In idle or saved-selection state, a single `Press this button to inspect` click should immediately re-enter inspect mode even before starting a new capture workflow.
-- Persist selection trail in `events/selection-history.jsonl` in addition to `events/current-selection.json`.
-- Preferred client flow is `scripts/inspect-capture begin ...` followed by `scripts/inspect-capture await ...` in the same turn; use immediate-return fallback only when long-running tool waits are not viable.
-- For `/chrome-auth`, prefer the page-aware `auth-cdp` flow: `list-pages` -> `select-page` -> `snapshot --mode dom|a11y`, then interact with `wait-for`, `fill`, `hover`, `press-key`, and `screenshot` in the same dedicated session.
-- On macOS, open or reuse the dedicated Chrome profile in the background so MCP startup does not steal user focus.
-- Use repository checks when touching runtime/packaging behavior: `bash scripts/verify-manifest.sh` and `bash scripts/test-runtime.sh`.
-- For inspect-toolbar behavior changes, also run `node runtime/chrome-use/scripts/inspect_visual_loop.mjs`.
-- For README demo refreshes, run `bash scripts/build-readme-gif.sh` (requires `ffmpeg`).
-- Visual Design Baseline
-  - Base compact UI on Apple-inspired principles from the HIG and Apple UI design tips: restraint, clarity, alignment, safe spacing, consistent control geometry, and strong visual hierarchy.
-  - Use a `4pt` spacing grid. Preferred steps are `4 / 8 / 12 / 16 / 20 / 24`.
-  - Floating UI must keep a safe inset from viewport edges. Default top/right inset is `20px`; acceptable range is `16-24px`. Never pin overlays flush to the viewport edge.
-  - Use one coordinated radius family per component tree. Do not mix sharp rectangles, low-radius boxes, and fully pill-shaped controls unless hierarchy clearly demands it.
-  - Default compact radius scale:
-    - square utility button: `12px`
-    - pill / expanded action button: `18px`
-    - floating panel / overlay card: `16px`
-  - Default compact padding scale:
-    - square icon button: fixed square, `0` horizontal padding
-    - expanded action button: `12px` horizontal padding, `36-40px` height
-    - floating panel body: `12px` internal padding
-  - Minimum readable text size in compact overlays is `11px`; default compact UI text is `12px`.
-  - Mouse-first compact controls should be at least `36px` tall. If touch use is plausible, prefer `44px`.
-  - Width should be content-driven. Do not give compact toolbars or buttons extra horizontal space beyond icon, text, and padding.
-  - Align related edges deliberately. Buttons, labels, and content blocks should share a clear left or right edge; avoid almost-aligned geometry.
-  - Keep controls visually distinct from content. The primary action should read as the affordance; supporting content should read as secondary information beneath or attached to it.
-  - Collapsed state should show only the affordance. Expanded state should reveal label and supporting content without changing to an unrelated shape language.
-  - Avoid cramped text, oversized empty gutters, and arbitrary spacing jumps. Increase line height or local spacing before increasing overall panel width.
-  - When UI geometry changes materially, update visual assertions in the repo so spacing, inset, radius, and alignment stay enforced.
-- Complete the full requested task before returning whenever feasible; do not stop after a partial implementation if a known issue remains reproducible.
-- When a validation step still exposes a concrete bug or flaky runtime path that is in scope for the current task, continue debugging and fix it before responding.
-- Do not claim Windows support unless it has been tested end-to-end.
-- When asked to ship changes from this repo, prefer committing directly on `main`, pushing `main`, and refreshing installs in both `~/.agents/skills` and `~/.codex/skills`.
-- When updating launch messaging, optimize for shareability:
-  - lead with the pain point
-  - list the 2-3 concrete fixes
-  - keep the GitHub link in the post
-- Launch messaging must be decision-complete before posting. Do not improvise launch copy at publish time.
-- For public launch-facing naming, always use:
-  - `chrome-use`
-  - `chrome-inspect`
+- This repo owns the `chrome-inspect` / `chrome-auth` runtime and install surface for explicit Chrome CDP work on this machine.
+- Current runtime contract: use a managed `Chrome for Testing` browser plus a dedicated `~/.chrome-use/browser-data/<channel-or-version>` user-data-dir over CDP instead of attaching to the user's `Google Chrome.app` `Default` profile or maintaining an app shim.
+
+## Repo Scope
+
+- Public browser skill names in this repo:
   - `chrome-auth`
-- For milestone posts on X, do not default to in-place editing. If the live post is weak or structurally wrong, delete it, publish a reviewed replacement, and verify the profile timeline afterward.
-- Default X launch format for this repo is one bilingual post:
-  - English first
-  - Chinese second
-- English X launch structure must be:
-  - one opening summary sentence that says what shipped
-  - 2-3 short benefit-led bullets
-  - one closing line with CTA plus the GitHub repo link
-  - wrap repo names, skill names, and command-like feature names in backticks when it improves scanability
-- Chinese X launch structure must be:
-  - one compact paragraph
-  - say what shipped, why it matters, and invite people to try, star, follow, or open PRs
-  - include the GitHub repo link in that paragraph
-  - wrap repo names, skill names, and command-like feature names in backticks when it improves scanability
-- Launch-post tone should be energetic and user-facing:
-  - lead with user payoff, not internal implementation
-  - emphasize faster workflows, full end-to-end flow, dedicated agent profile, direct CDP runtime, and shared auth + inspect session when they apply
-  - make the product feel sharp, fast, and complete
-- Avoid weak launch patterns:
-  - implementation-only bullets without outcome language
-  - missing repo link
-  - flat “we shipped X” wording without urgency or payoff
-  - low-energy phrasing that reads like internal notes
-- README launch copy must be treated as part of release quality:
-  - the first screen should say what shipped, why it matters, and who it is for
-  - launch sections should lead with outcomes, then architecture proof, then quick-start path
-  - bilingual docs should stay structurally aligned, but translation should be idiomatic rather than mechanical
-  - milestone README updates are required, not optional cleanup
-- Open-source growth guidance for this repo:
-  - always keep the README hero section polished before launch
-  - always include clear contribution signals near top-level docs when appropriate, such as PRs welcome, release notes, roadmap, or issue entry points
-  - always route social posts back to the GitHub repo
-  - bias toward crisp demos, clear pain points, and contributor-friendly repo presentation
+  - `chrome-inspect`
+- Shared runtime lives under `runtime/chrome-use/`.
+
+## Canonical Commands
+
+- Installer entrypoint:
+  - `bash install/install.sh`
+- Client-specific installers:
+  - `bash install/install-codex-skill.sh`
+  - `bash install/install-agent-skill.sh`
+- Runtime validation:
+  - `bash scripts/verify-manifest.sh`
+  - `bash scripts/test-runtime.sh`
+  - `bash runtime/chrome-use/scripts/doctor.sh`
+  - `~/.chrome-use/bin/chrome-use-open-google-chrome`
+
+## Maintenance Rules
+
+- Keep packaging cross-agent and cross-platform when working in this repo.
+- Keep Codex-specific metadata optional and isolated.
+- Validate changes through this repo's own install and runtime checks plus a real local attach to the managed `Chrome for Testing` browser, not just mocked runtime output.

@@ -19,6 +19,7 @@ launch_chrome() {
     macos)
       local args=(
         --user-data-dir="$PROFILE_DIR"
+        --profile-directory="$PROFILE_NAME"
         --remote-debugging-port="$DEBUG_PORT"
         --no-first-run
         --no-default-browser-check
@@ -26,15 +27,12 @@ launch_chrome() {
       if [[ -n "$START_URL" ]]; then
         args+=("$START_URL")
       fi
-      if [[ -n "${CHROME_USE_CHROME_APP:-}" ]]; then
-        open -g -na "$CHROME_USE_CHROME_APP" --args "${args[@]}" >>"$LOG_FILE" 2>&1
-      else
-        open -g -na "Google Chrome" --args "${args[@]}" >>"$LOG_FILE" 2>&1
-      fi
+      "$chrome_bin" "${args[@]}" >>"$LOG_FILE" 2>&1 &
       ;;
     linux)
       local args=(
         --user-data-dir="$PROFILE_DIR"
+        --profile-directory="$PROFILE_NAME"
         --remote-debugging-port="$DEBUG_PORT"
         --no-first-run
         --no-default-browser-check
@@ -53,6 +51,33 @@ launch_chrome() {
       exit 1
       ;;
   esac
+}
+
+quit_running_chrome() {
+  local os
+  local app_name
+  local browser_pids
+  os="$(platform)"
+  browser_pids="$(list_profile_root_pids || true)"
+
+  [[ -n "$browser_pids" ]] || return 0
+
+  if [[ "$os" == "macos" ]]; then
+    app_name="$(detect_chrome_app_name)"
+    osascript -e "tell application \"$app_name\" to quit" >/dev/null 2>&1 || true
+    for _ in $(seq 1 20); do
+      sleep 1
+      browser_pids="$(list_browser_root_pids || true)"
+      [[ -z "$browser_pids" ]] && return 0
+    done
+  fi
+
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] || continue
+    kill "$pid" >/dev/null 2>&1 || true
+  done <<<"$browser_pids"
+
+  sleep 2
 }
 
 url_encode() {
@@ -204,7 +229,7 @@ try {
 NODE
 }
 
-wait_for_dedicated_instance() {
+wait_for_browser_instance() {
   local matching_pids
   local matching_count
   local pid
@@ -219,7 +244,7 @@ wait_for_dedicated_instance() {
     matching_pids="$(list_matching_pids || true)"
     matching_count="$(count_lines "$matching_pids")"
     if [[ "$matching_count" -gt 1 ]]; then
-      echo "Dedicated profile Chrome must have exactly one owning process; found ${matching_count} process(es) on ${DEBUG_URL}." >&2
+      echo "$(expected_browser_owner_label) must expose ${DEBUG_URL} from exactly one owner process; found ${matching_count} process(es)." >&2
       return 1
     fi
 
@@ -235,7 +260,7 @@ wait_for_dedicated_instance() {
   return 1
 }
 
-ensure_endpoint_owned_by_dedicated_profile() {
+ensure_endpoint_owned_by_profile() {
   local matching_pids
   local matching_count
   local pid
@@ -248,12 +273,12 @@ ensure_endpoint_owned_by_dedicated_profile() {
   matching_count="$(count_lines "$matching_pids")"
 
   if [[ "$matching_count" -gt 1 ]]; then
-    echo "Dedicated profile Chrome must have exactly one owning process; found ${matching_count} process(es) on ${DEBUG_URL}." >&2
+    echo "$(expected_browser_owner_label) must expose ${DEBUG_URL} from exactly one owner process; found ${matching_count} process(es)." >&2
     exit 1
   fi
 
   if [[ "$matching_count" -eq 0 ]]; then
-    echo "A Chrome debug endpoint is listening on ${DEBUG_URL}, but no Chrome process is using the expected profile ${PROFILE_DIR}." >&2
+    echo "A Chrome debug endpoint is listening on ${DEBUG_URL}, but it is not owned by $(expected_browser_owner_label) with profile ${PROFILE_NAME}." >&2
     exit 1
   fi
 
@@ -262,15 +287,21 @@ ensure_endpoint_owned_by_dedicated_profile() {
   return 0
 }
 
-mkdir -p "$PROFILE_DIR" "$STATE_DIR"
+mkdir -p "$STATE_DIR"
+mkdir -p "$PROFILE_DIR"
 
 chrome_bin="$(detect_chrome_bin)"
 if [[ -z "$chrome_bin" && "$(platform)" != "windows" ]]; then
-  echo "Could not find a Chrome binary. Set CHROME_USE_CHROME_BIN explicitly." >&2
+  if [[ "$(browser_kind)" == "cft" ]]; then
+    echo "Could not find a managed Chrome for Testing binary." >&2
+    echo "Re-run the installer so it downloads Chrome for Testing, or set CHROME_USE_CHROME_BIN explicitly." >&2
+  else
+    echo "Could not find a Chrome binary. Set CHROME_USE_CHROME_BIN explicitly." >&2
+  fi
   exit 1
 fi
 
-if ensure_endpoint_owned_by_dedicated_profile >/dev/null; then
+if ensure_endpoint_owned_by_profile >/dev/null; then
   existing_target_id="$(find_matching_target_for_url "$START_URL")"
   if [[ -n "${existing_target_id:-}" ]]; then
     if should_activate_existing_target; then
@@ -285,22 +316,22 @@ if ensure_endpoint_owned_by_dedicated_profile >/dev/null; then
   exit 0
 fi
 
-profile_pids="$(list_profile_pids || true)"
-if [[ -n "$profile_pids" ]]; then
-  while IFS= read -r pid; do
-    [[ -n "$pid" ]] || continue
-    kill "$pid" >/dev/null 2>&1 || true
-  done <<< "$profile_pids"
-  sleep 2
-fi
+quit_running_chrome
 
 launch_chrome "$chrome_bin"
 
-if wait_for_dedicated_instance >/dev/null; then
+if wait_for_browser_instance >/dev/null; then
   record_preferred_target_for_url "$START_URL"
   echo "$DEBUG_URL"
   exit 0
 fi
 
-echo "Timed out waiting for the dedicated profile to expose ${DEBUG_URL}." >&2
+if [[ "$(browser_kind)" == "system" ]] && uses_default_chrome_profile; then
+  echo "Google Chrome launched with --remote-debugging-port=${DEBUG_PORT}, but ${DEBUG_URL} never came up." >&2
+  echo "Chrome 136+ ignores remote debugging switches on the default Chrome data directory." >&2
+  echo "Direct CDP attach to Google Chrome.app Default is blocked; use a non-standard --user-data-dir if you need CDP." >&2
+  exit 1
+fi
+
+echo "Timed out waiting for $(expected_browser_owner_label) profile ${PROFILE_NAME} to expose ${DEBUG_URL}." >&2
 exit 1

@@ -35,7 +35,7 @@ debug_url="$("$SCRIPT_DIR/open_url.sh" "$START_URL")"
 matching_pids="$(list_matching_pids || true)"
 matching_count="$(count_lines "$matching_pids")"
 if [[ "$matching_count" -ne 1 ]]; then
-  echo "Expected exactly one dedicated Chrome owner process for ${PROFILE_DIR} on ${DEBUG_URL}; found ${matching_count}." >&2
+  echo "Expected exactly one $(expected_browser_owner_label) owner process for profile ${PROFILE_NAME} on ${DEBUG_URL}; found ${matching_count}." >&2
   exit 1
 fi
 

@@ -1,6 +1,6 @@
 # Codex adapter notes
 
-For Codex, `chrome-use` is most useful when the user can point at the page faster than they can describe it. `chrome-inspect` keeps the tool call open, waits for the real click, and returns structured `page` / `element` / `content` context, while `chrome-auth` keeps the same login state alive in the dedicated profile.
+For Codex, `chrome-use` is most useful when the user can point at the page faster than they can describe it. `chrome-inspect` keeps the tool call open, waits for the real click, and returns structured `page` / `element` / `content` context, while `chrome-auth` keeps the same login state alive in the managed Chrome for Testing session.
 
 Codex supports the generic skill payload plus optional metadata in installed skill folders:
 
@@ -19,7 +19,7 @@ or:
 bash install/install.sh --target codex
 ```
 
-The unified installer detects Codex, recommends `codex + generic`, materializes public skills into `~/.codex/skills/`, installs the managed runtime under `~/.chrome-use/runtime/chrome-use` and managed skill payloads under `~/.chrome-use/skills/`, and on macOS creates `~/Applications/Agent Profile Chrome.app` by default.
+The unified installer detects Codex, materializes public skills into `~/.codex/skills/`, and installs the managed runtime under `~/.chrome-use/runtime/chrome-use` plus managed skill payloads under `~/.chrome-use/skills/`.
 
 This repo intentionally exposes only two explicit commands: `chrome-inspect` and `chrome-auth`.
 `/chrome` and `/inspect` are not registered command selectors.
@@ -34,37 +34,36 @@ Both public skills are also allowed to trigger implicitly when the user's reques
 
 For local-project inspect work, omitting the URL should not skip repo lookup. The shared runtime now infers the project root from the current working directory or git root before falling back to `about:blank`.
 
-Codex should use the canonical dedicated runtime unless there is an explicit local override requirement:
+Codex should use the canonical managed Chrome for Testing runtime unless there is an explicit local override requirement:
 
 ```bash
-export CHROME_USE_PROFILE_DIR="$HOME/.chrome-use/agent-profile"
+export CHROME_USE_BROWSER_KIND="cft"
+export CHROME_USE_CFT_CHANNEL="stable"
+export CHROME_USE_PROFILE_DIR="$HOME/.chrome-use/browser-data/stable"
 export CHROME_USE_DEBUG_PORT="9223"
 ```
 
 Public `chrome-inspect` and `chrome-auth` flows now always run a strict preflight before attaching:
 
-- require the canonical `agent-profile` on `127.0.0.1:9223`
-- require exactly one owning Chrome process for that dedicated profile
-- auto-repair by launching/reusing the canonical runtime when the endpoint is missing or mismatched
-- hard-block if the endpoint still resolves to the wrong profile, wrong port, or multiple owner processes after repair
+- require the managed `Chrome for Testing` runtime exposing `127.0.0.1:9223`
+- require exactly one owning Chrome for Testing process for the configured browser-data path
+- auto-repair by relaunching/reusing Chrome for Testing when the endpoint is missing or mismatched
+- hard-block if the endpoint still resolves to the wrong runtime, wrong port, or multiple owner processes after repair
 
 Typical inspect command flow:
 
 ```bash
-CHROME_USE_PROFILE_DIR="$HOME/.chrome-use/agent-profile" \
+CHROME_USE_PROFILE_DIR="$HOME/.chrome-use/browser-data/stable" \
   bash skills/chrome-inspect/scripts/open_url.sh "http://127.0.0.1:8000/"
-CHROME_USE_PROFILE_DIR="$HOME/.chrome-use/agent-profile" \
+CHROME_USE_PROFILE_DIR="$HOME/.chrome-use/browser-data/stable" \
   skills/chrome-inspect/scripts/inspect-capture begin --project-root "/path/to/repo"
 ```
 
-For manual login-state preparation or user-created Chrome Web Apps, use the dedicated launcher that Codex installs by default on macOS:
+For manual login-state preparation, use the installed bootstrap wrapper:
 
 ```bash
-bash scripts/install-agent-profile-chrome-app.sh
+~/.chrome-use/bin/chrome-use-open-google-chrome
 ```
-
-This creates `Agent Profile Chrome`, which always opens the same canonical dedicated profile/debug toolchain that Codex will later reuse for auth and inspect work. Pass `--skip-chrome-app` if you explicitly want a Codex install without creating the app.
-The app bundle itself lives at `~/Applications/Agent Profile Chrome.app`, not under `~/.chrome-use`.
 
 Recommended verification for public skills:
 
@@ -73,7 +72,7 @@ Recommended verification for public skills:
 2. Resolve each public command from the installed skill directory, not from the repo root `scripts/` directory. The skill entrypoints are `~/.codex/skills/chrome-inspect/scripts/...` and `~/.codex/skills/chrome-auth/scripts/...` after install.
 3. Send `/chrome-inspect` in chat.
 4. Chrome session is opened through the installed skill's `scripts/open_url.sh` with the resolved startup URL, and the local project web app is auto-started first when `CHROME_INSPECT_PROJECT_ROOT` is configured or the current repo can be inferred as the local project.
-   Reuse keeps the dedicated `agent-profile` on the same owner process and opens a new tab on that running instance.
+   Reuse keeps Chrome for Testing on the same owner process and opens a new tab on that running instance.
    Reusing an existing matching target no longer activates that tab by default; set `CHROME_USE_ACTIVATE_EXISTING_TARGET=1` only for explicit operator-facing flows that must bring it forward.
    If the expected preview port is already listening but the target URL is still unreachable, the runtime should stop immediately with a listener-blocker error instead of starting another server.
 5. The runtime should prioritize the freshly opened target instead of attaching unrelated tabs.
@@ -94,4 +93,4 @@ Recommended verification for public skills:
 13. Reply with a concrete edit instruction.
 14. Confirm returned `phase=ready_to_apply` after `~/.codex/skills/chrome-inspect/scripts/inspect-capture apply --workflow-id "<workflowId>" --instruction "<user instruction>"`.
 
-For `/chrome-auth`, send the explicit auth URL and then use `~/.codex/skills/chrome-auth/scripts/auth-cdp` for login/authorization actions while keeping the same dedicated profile and debug endpoint. Prefer `list-pages` plus `bind-page --page-id "<id>"` when more than one tab or window is open, then keep passing `--binding-id "<binding-id>"` so every DOM action stays pinned to that tab instead of inheriting an endpoint-wide selected page.
+For `/chrome-auth`, send the explicit auth URL and then use `~/.codex/skills/chrome-auth/scripts/auth-cdp` for login/authorization actions while keeping the same managed browser session and debug endpoint. Prefer `list-pages` plus `bind-page --page-id "<id>"` when more than one tab or window is open, then keep passing `--binding-id "<binding-id>"` so every DOM action stays pinned to that tab instead of inheriting an endpoint-wide selected page.

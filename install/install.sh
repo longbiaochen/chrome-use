@@ -12,17 +12,25 @@ BIN_ROOT="${INSTALL_ROOT}/bin"
 MANIFEST_PATH="${INSTALL_ROOT}/install-manifest.json"
 
 TARGET_SPEC=""
+BROWSER_SPEC="${CHROME_USE_BROWSER_KIND:-}"
 NON_INTERACTIVE=0
 ASSUME_YES=0
-INSTALL_CHROME_APP="auto"
+INSTALL_CHROME_APP="0"
+SKIP_BROWSER_DOWNLOAD=0
 SKIP_PREFLIGHT="${CHROME_USE_INSTALL_SKIP_PREFLIGHT:-0}"
-CHROME_APP_INSTALLER="${CHROME_USE_INSTALL_CHROME_APP_SCRIPT:-${REPO_ROOT}/scripts/install-agent-profile-chrome-app.sh}"
 
 TARGETS=()
 INSTALLED_TARGETS=()
 INSTALL_WARNINGS=()
+PRUNED_TARGETS=()
 CHROME_APP_STATUS="skipped"
 CHROME_APP_PATH=""
+BROWSER_STATUS="pending"
+BROWSER_KIND_RESOLVED=""
+BROWSER_CHANNEL_RESOLVED=""
+BROWSER_VERSION_RESOLVED=""
+BROWSER_PLATFORM_RESOLVED=""
+BROWSER_BINARY_RESOLVED=""
 
 usage() {
   cat <<'EOF'
@@ -30,8 +38,10 @@ Usage: bash install/install.sh [options]
 
 Options:
   --target codex|generic|claude|all
-  --install-chrome-app
-  --skip-chrome-app
+  --browser cft|system
+  --skip-browser-download
+  --install-chrome-app   (legacy no-op)
+  --skip-chrome-app      (legacy no-op)
   --non-interactive
   --yes
   --help
@@ -74,10 +84,24 @@ supports_codex() {
 
 default_target_spec() {
   if supports_codex; then
-    echo "codex,generic"
+    echo "codex"
   else
     echo "generic"
   fi
+}
+
+resolve_browser_kind() {
+  local raw="${BROWSER_SPEC:-${CHROME_USE_BROWSER_KIND:-cft}}"
+  raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  case "$raw" in
+    ""|cft|system)
+      echo "${raw:-cft}"
+      ;;
+    *)
+      echo "Unsupported browser kind: $raw" >&2
+      exit 1
+      ;;
+  esac
 }
 
 parse_target_spec() {
@@ -138,18 +162,18 @@ choose_targets_interactively() {
 
   echo "Install `chrome-use` skills into:"
   if supports_codex; then
-    echo "  1) Codex + generic (.agents/skills) [recommended]"
-    echo "  2) Codex only"
-    echo "  3) Generic only"
+    echo "  1) Codex only [recommended]"
+    echo "  2) Generic only"
+    echo "  3) Codex + generic (.agents/skills)"
     echo "  4) Claude-compatible only"
     echo "  5) All supported targets"
     printf "Choose an option [1]: " >&2
     local choice
     read -r choice || true
     case "${choice:-1}" in
-      1) TARGET_SPEC="codex,generic" ;;
-      2) TARGET_SPEC="codex" ;;
-      3) TARGET_SPEC="generic" ;;
+      1) TARGET_SPEC="codex" ;;
+      2) TARGET_SPEC="generic" ;;
+      3) TARGET_SPEC="codex,generic" ;;
       4) TARGET_SPEC="claude" ;;
       5) TARGET_SPEC="all" ;;
       *)
@@ -177,10 +201,10 @@ choose_targets_interactively() {
 }
 
 ensure_dirs() {
-  mkdir -p "${INSTALL_ROOT}" "${BIN_ROOT}" "${INSTALL_ROOT}/runtime" "${MANAGED_SKILLS_ROOT}" "${INSTALL_ROOT}/agent-profile" "${INSTALL_ROOT}/state"
+  mkdir -p "${INSTALL_ROOT}" "${BIN_ROOT}" "${INSTALL_ROOT}/runtime" "${MANAGED_SKILLS_ROOT}" "${INSTALL_ROOT}/state" "${INSTALL_ROOT}/browser-data" "${INSTALL_ROOT}/browsers"
 }
 
-ensure_chrome_available() {
+ensure_system_chrome_available() {
   local chrome_bin
   local os
   os="$(platform)"
@@ -197,7 +221,8 @@ ensure_chrome_available() {
   case "$os" in
     macos)
       echo "Google Chrome.app was not found."
-      echo "chrome-use is macOS-first and needs Chrome to create the dedicated agent profile."
+      echo "chrome-use can use Google Chrome.app as an explicit system-browser override."
+      echo "The default public path is managed Chrome for Testing; use --browser system only when you intentionally want a user-supplied browser."
       if command -v brew >/dev/null 2>&1; then
         echo "Recommended install command:"
         echo "  brew install --cask google-chrome"
@@ -235,6 +260,174 @@ ensure_chrome_available() {
   esac
 }
 
+ensure_browser_download_dependencies() {
+  local missing=()
+  command -v curl >/dev/null 2>&1 || missing+=("curl")
+  command -v unzip >/dev/null 2>&1 || missing+=("unzip")
+  command -v node >/dev/null 2>&1 || missing+=("node")
+  if (( ${#missing[@]} > 0 )); then
+    echo "Missing required tools for Chrome for Testing download: ${missing[*]}" >&2
+    exit 1
+  fi
+}
+
+resolve_cft_metadata_url() {
+  if [[ -n "${CHROME_USE_CFT_METADATA_URL:-}" ]]; then
+    echo "${CHROME_USE_CFT_METADATA_URL}"
+    return
+  fi
+
+  if [[ -n "${CHROME_USE_CFT_VERSION:-}" ]]; then
+    echo "https://googlechromelabs.github.io/chrome-for-testing/${CHROME_USE_CFT_VERSION}.json"
+    return
+  fi
+
+  echo "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json"
+}
+
+resolve_cft_download_info() {
+  local metadata_url="$1"
+  local requested_channel
+  local requested_version
+  local requested_platform
+  requested_channel="$(cft_channel)"
+  requested_version="${CHROME_USE_CFT_VERSION:-}"
+  requested_platform="$(cft_platform)"
+  [[ -n "$requested_platform" ]] || {
+    echo "Unsupported platform for Chrome for Testing download." >&2
+    exit 1
+  }
+
+  node -e '
+const fs = require("fs");
+const [metadataUrl, requestedChannel, requestedVersion, requestedPlatform] = process.argv.slice(1);
+const input = fs.readFileSync(0, "utf8");
+const payload = JSON.parse(input);
+
+function findChannel(channels, wanted) {
+  if (!channels || typeof channels !== "object") return null;
+  const needle = String(wanted || "").toLowerCase();
+  for (const [key, value] of Object.entries(channels)) {
+    if (String(key).toLowerCase() === needle) {
+      return value;
+    }
+  }
+  return null;
+}
+
+let version = requestedVersion || "";
+let downloads = null;
+if (payload && payload.channels) {
+  const channelInfo = findChannel(payload.channels, requestedChannel);
+  if (!channelInfo) {
+    throw new Error(`Missing channel ${requestedChannel} in ${metadataUrl}`);
+  }
+  version = version || channelInfo.version || "";
+  downloads = channelInfo.downloads?.chrome || null;
+} else {
+  version = version || payload.version || "";
+  downloads = payload.downloads?.chrome || null;
+}
+
+if (!version) {
+  throw new Error(`Could not resolve Chrome for Testing version from ${metadataUrl}`);
+}
+if (!Array.isArray(downloads)) {
+  throw new Error(`Could not resolve Chrome for Testing downloads from ${metadataUrl}`);
+}
+
+const match = downloads.find((entry) => entry && entry.platform === requestedPlatform);
+if (!match?.url) {
+  throw new Error(`Could not find Chrome for Testing download for ${requestedPlatform} in ${metadataUrl}`);
+}
+
+process.stdout.write(`${version}\t${match.url}\n`);
+' "$metadata_url" "$requested_channel" "$requested_version" "$requested_platform"
+}
+
+install_managed_cft_browser() {
+  local metadata_url
+  local download_info
+  local version
+  local download_url
+  local version_root
+  local platform_root
+  local relpath
+  local tmp_zip
+
+  BROWSER_KIND_RESOLVED="cft"
+  BROWSER_CHANNEL_RESOLVED="$(cft_channel)"
+  BROWSER_PLATFORM_RESOLVED="$(cft_platform)"
+  relpath="$(cft_binary_relpath "$BROWSER_PLATFORM_RESOLVED")"
+  [[ -n "$BROWSER_PLATFORM_RESOLVED" && -n "$relpath" ]] || {
+    echo "Unsupported platform for Chrome for Testing runtime." >&2
+    exit 1
+  }
+
+  metadata_url="$(resolve_cft_metadata_url)"
+  if ! download_info="$(curl -fsSL "$metadata_url" | resolve_cft_download_info "$metadata_url")"; then
+    echo "Could not resolve Chrome for Testing download metadata from $metadata_url" >&2
+    exit 1
+  fi
+  version="${download_info%%$'\t'*}"
+  download_url="${download_info#*$'\t'}"
+  version_root="${INSTALL_ROOT}/browsers/chrome-for-testing/${version}"
+  platform_root="${version_root}/${BROWSER_PLATFORM_RESOLVED}"
+  BROWSER_VERSION_RESOLVED="$version"
+  BROWSER_BINARY_RESOLVED="${platform_root}/${relpath}"
+
+  if [[ -x "$BROWSER_BINARY_RESOLVED" ]]; then
+    BROWSER_STATUS="present"
+  else
+    if [[ "$SKIP_BROWSER_DOWNLOAD" == "1" ]]; then
+      INSTALL_WARNINGS+=("Managed Chrome for Testing download was skipped, and no installed browser was found at ${BROWSER_BINARY_RESOLVED}. Re-run install without --skip-browser-download or set CHROME_USE_CHROME_BIN explicitly.")
+      BROWSER_STATUS="missing"
+      return 0
+    fi
+
+    ensure_browser_download_dependencies
+    mkdir -p "${platform_root}" "${CFT_CHANNELS_ROOT}"
+    tmp_zip="$(mktemp "${TMPDIR:-/tmp}/chrome-for-testing.XXXXXX.zip")"
+    rm -rf "${platform_root}"
+    mkdir -p "${platform_root}"
+    if ! curl -fsSL "$download_url" -o "$tmp_zip"; then
+      rm -f "$tmp_zip"
+      echo "Could not download Chrome for Testing from $download_url" >&2
+      exit 1
+    fi
+    if ! unzip -q "$tmp_zip" -d "${platform_root}"; then
+      rm -f "$tmp_zip"
+      echo "Could not extract Chrome for Testing archive $tmp_zip" >&2
+      exit 1
+    fi
+    rm -f "$tmp_zip"
+    if [[ "$(platform)" == "macos" ]]; then
+      xattr -cr "${platform_root}" >/dev/null 2>&1 || true
+    fi
+    BROWSER_STATUS="downloaded"
+  fi
+
+  mkdir -p "${CFT_CHANNELS_ROOT}"
+  printf '%s\n' "$version" >"${CFT_CHANNELS_ROOT}/${BROWSER_CHANNEL_RESOLVED}-${BROWSER_PLATFORM_RESOLVED}.txt"
+}
+
+ensure_browser_available() {
+  BROWSER_KIND_RESOLVED="$(resolve_browser_kind)"
+  case "$BROWSER_KIND_RESOLVED" in
+    system)
+      BROWSER_STATUS="system"
+      BROWSER_CHANNEL_RESOLVED=""
+      BROWSER_VERSION_RESOLVED=""
+      BROWSER_PLATFORM_RESOLVED="$(cft_platform)"
+      ensure_system_chrome_available
+      BROWSER_BINARY_RESOLVED="$(detect_system_chrome_bin || true)"
+      ;;
+    cft)
+      install_managed_cft_browser
+      ;;
+  esac
+}
+
 install_managed_payload() {
   rm -rf "${INSTALL_ROOT}/dist" "${MANAGED_RUNTIME_ROOT}" "${MANAGED_SKILLS_ROOT}/chrome-inspect" "${MANAGED_SKILLS_ROOT}/chrome-auth"
   mkdir -p "${INSTALL_ROOT}/runtime" "${MANAGED_SKILLS_ROOT}"
@@ -263,6 +456,15 @@ INSTALL_ROOT="${CHROME_USE_INSTALL_ROOT:-$HOME/.chrome-use}"
 exec "${INSTALL_ROOT}/runtime/chrome-use/scripts/open_agent_profile_chrome.sh" "$@"
 EOF
   chmod +x "${BIN_ROOT}/chrome-use-open-agent-profile-chrome"
+
+  cat >"${BIN_ROOT}/chrome-use-open-google-chrome" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+INSTALL_ROOT="${CHROME_USE_INSTALL_ROOT:-$HOME/.chrome-use}"
+exec "${INSTALL_ROOT}/runtime/chrome-use/scripts/open_agent_profile_chrome.sh" "$@"
+EOF
+  chmod +x "${BIN_ROOT}/chrome-use-open-google-chrome"
 }
 
 install_skill_dir() {
@@ -295,6 +497,26 @@ install_target() {
   INSTALLED_TARGETS+=("${target}:${target_root}")
 }
 
+prune_unselected_targets() {
+  local target
+  local target_root
+  for target in codex generic claude; do
+    if has_target "$target"; then
+      continue
+    fi
+
+    target_root="$(resolve_target_root "$target")"
+    if [[ -d "${target_root}/chrome-inspect" || -d "${target_root}/chrome-auth" ]]; then
+      rm -rf "${target_root}/chrome-inspect" "${target_root}/chrome-auth"
+      PRUNED_TARGETS+=("${target}:${target_root}")
+    fi
+  done
+
+  if has_target "codex" && has_target "generic"; then
+    INSTALL_WARNINGS+=("Both codex and generic targets were selected. Codex may surface duplicate \`chrome-inspect\` and \`chrome-auth\` entries when both \`~/.codex/skills\` and \`~/.agents/skills\` contain these skills.")
+  fi
+}
+
 bootstrap_profile() {
   local bootstrap_output=""
   if [[ "$SKIP_PREFLIGHT" == "1" ]]; then
@@ -307,39 +529,19 @@ bootstrap_profile() {
     fi
   fi
 
-  INSTALL_WARNINGS+=("Runtime bootstrap check could not verify the dedicated profile automatically. Install completed successfully; retry later with \`${BIN_ROOT}/chrome-use-doctor\` or \`${BIN_ROOT}/chrome-use-open-agent-profile-chrome\`.")
+  INSTALL_WARNINGS+=("Runtime bootstrap check could not verify the managed browser attach automatically. Install completed successfully; retry later with \`${BIN_ROOT}/chrome-use-doctor\` or \`${BIN_ROOT}/chrome-use-open-google-chrome\`.")
   INSTALL_WARNINGS+=("Bootstrap check output: $(printf '%s' "$bootstrap_output" | tr '\n' ' ' | sed 's/  */ /g')")
   return 0
 }
 
 maybe_install_chrome_app() {
-  if [[ "$(platform)" != "macos" ]]; then
-    CHROME_APP_STATUS="unsupported"
+  if [[ "$INSTALL_CHROME_APP" == "1" ]]; then
+    CHROME_APP_STATUS="deprecated"
+    INSTALL_WARNINGS+=("--install-chrome-app is deprecated. chrome-use now uses a managed Chrome for Testing runtime by default and no separate Chrome app shim is installed.")
     return 0
   fi
 
-  if [[ "$INSTALL_CHROME_APP" == "auto" ]]; then
-    if has_target "codex"; then
-      INSTALL_CHROME_APP="1"
-    else
-      INSTALL_CHROME_APP="0"
-    fi
-  fi
-
-  if [[ "$INSTALL_CHROME_APP" != "1" ]]; then
-    CHROME_APP_STATUS="skipped"
-    return 0
-  fi
-
-  if app_path="$(bash "${CHROME_APP_INSTALLER}" 2>&1)"; then
-    CHROME_APP_STATUS="installed"
-    CHROME_APP_PATH="$(printf '%s\n' "$app_path" | tail -n 1)"
-    return 0
-  fi
-
-  CHROME_APP_STATUS="failed"
-  INSTALL_WARNINGS+=("Could not install Agent Profile Chrome.app automatically. Skills/runtime were installed successfully. Retry with \`bash scripts/install-agent-profile-chrome-app.sh\`.")
-  INSTALL_WARNINGS+=("App installer output: $(printf '%s' "$app_path" | tr '\n' ' ' | sed 's/  */ /g')")
+  CHROME_APP_STATUS="skipped"
   return 0
 }
 
@@ -376,6 +578,11 @@ const payload = {
   installedAt: new Date().toISOString(),
   publicSkills: ["chrome-inspect", "chrome-auth"],
   targets,
+  browserKind: process.env.CHROME_USE_INSTALL_BROWSER_KIND || "",
+  browserChannel: process.env.CHROME_USE_INSTALL_BROWSER_CHANNEL || "",
+  browserVersion: process.env.CHROME_USE_INSTALL_BROWSER_VERSION || "",
+  browserPlatform: process.env.CHROME_USE_INSTALL_BROWSER_PLATFORM || "",
+  browserBinary: process.env.CHROME_USE_INSTALL_BROWSER_BINARY || "",
 };
 fs.writeFileSync(manifestPath, `${JSON.stringify(payload, null, 2)}\n`);
 NODE
@@ -388,6 +595,13 @@ print_summary() {
   for entry in "${INSTALLED_TARGETS[@]:-}"; do
     echo "  - ${entry%%:*}: ${entry#*:}"
   done
+  if (( ${#PRUNED_TARGETS[@]} > 0 )); then
+    echo
+    echo "Removed duplicate installs from unselected targets:"
+    for entry in "${PRUNED_TARGETS[@]:-}"; do
+      echo "  - ${entry%%:*}: ${entry#*:}"
+    done
+  fi
   echo
   echo "Public skills:"
   echo "  - chrome-inspect"
@@ -398,15 +612,20 @@ print_summary() {
     echo "  - Explicit: /chrome-inspect or /chrome-auth"
     echo "  - Implicit: browser QA, auth, and live-page inspection requests"
   fi
-  echo "Login-state preparation:"
-  if [[ "$CHROME_APP_STATUS" == "installed" ]]; then
-    echo "  - Agent Profile Chrome installed at \`${CHROME_APP_PATH}\`"
-  elif [[ "$CHROME_APP_STATUS" == "failed" ]]; then
-    echo "  - Agent Profile Chrome app install failed; see warning below"
-  else
-    echo "  - Use \`Agent Profile Chrome\` if you installed the app"
+  echo "Browser runtime:"
+  echo "  - kind: ${BROWSER_KIND_RESOLVED:-unknown}"
+  if [[ -n "$BROWSER_VERSION_RESOLVED" ]]; then
+    echo "  - version: ${BROWSER_VERSION_RESOLVED}"
   fi
-  echo "  - Or run \`${BIN_ROOT}/chrome-use-open-agent-profile-chrome\`"
+  if [[ -n "$BROWSER_PLATFORM_RESOLVED" ]]; then
+    echo "  - platform: ${BROWSER_PLATFORM_RESOLVED}"
+  fi
+  if [[ -n "$BROWSER_BINARY_RESOLVED" ]]; then
+    echo "  - binary: ${BROWSER_BINARY_RESOLVED}"
+  fi
+  echo "Browser preparation:"
+  echo "  - Run \`${BIN_ROOT}/chrome-use-open-google-chrome\` to bootstrap CDP attach"
+  echo "  - Legacy compatibility alias remains at \`${BIN_ROOT}/chrome-use-open-agent-profile-chrome\`"
   if (( ${#INSTALL_WARNINGS[@]} > 0 )); then
     echo
     echo "Warnings:"
@@ -422,6 +641,14 @@ while [[ $# -gt 0 ]]; do
     --target)
       TARGET_SPEC="${2:-}"
       shift 2
+      ;;
+    --browser)
+      BROWSER_SPEC="${2:-}"
+      shift 2
+      ;;
+    --skip-browser-download)
+      SKIP_BROWSER_DOWNLOAD=1
+      shift
       ;;
     --install-chrome-app)
       INSTALL_CHROME_APP="1"
@@ -461,15 +688,19 @@ fi
 
 parse_target_spec "$TARGET_SPEC"
 ensure_dirs
-ensure_chrome_available
+ensure_browser_available
 install_managed_payload
 create_bin_wrappers
-bootstrap_profile
-maybe_install_chrome_app
-
 for target in "${TARGETS[@]}"; do
   install_target "$target"
 done
-
+prune_unselected_targets
+bootstrap_profile
+maybe_install_chrome_app
+export CHROME_USE_INSTALL_BROWSER_KIND="${BROWSER_KIND_RESOLVED}"
+export CHROME_USE_INSTALL_BROWSER_CHANNEL="${BROWSER_CHANNEL_RESOLVED}"
+export CHROME_USE_INSTALL_BROWSER_VERSION="${BROWSER_VERSION_RESOLVED}"
+export CHROME_USE_INSTALL_BROWSER_PLATFORM="${BROWSER_PLATFORM_RESOLVED}"
+export CHROME_USE_INSTALL_BROWSER_BINARY="${BROWSER_BINARY_RESOLVED}"
 write_manifest
 print_summary

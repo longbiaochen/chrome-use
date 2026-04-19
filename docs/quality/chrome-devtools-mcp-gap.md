@@ -11,12 +11,12 @@ Why:
   - durable `workflowId`-bound selections
   - `current-selection.json` and `selection-history.jsonl` recovery
   - `latest` fast path
-  - strict single dedicated-profile owner-process contract with target-level workflow isolation
+  - strict single-owner managed-browser contract with target-level workflow isolation
 
 Current policy:
 
 - Keep direct CDP as the public default for `chrome-inspect` and `chrome-auth`.
-- Keep the canonical runtime fixed to `agent-profile` on `127.0.0.1:9223`; public entrypoints must preflight and, when possible, auto-repair back to that dedicated runtime before attach.
+- Keep the canonical runtime fixed to managed `Chrome for Testing` on `127.0.0.1:9223`; public entrypoints must preflight and, when possible, auto-repair back to that runtime before attach.
 - Treat Chrome DevTools MCP as a capability baseline and experimental comparison target.
 - Do not require public skill users to install or configure an MCP server.
 
@@ -28,7 +28,7 @@ Capability mapping:
 | Structured page snapshot | `take_snapshot` | `auth-cdp snapshot --mode dom|a11y` |
 | Screenshot capture | `take_screenshot` | `auth-cdp screenshot` |
 | Basic interaction | `click`, `fill`, `hover`, `press_key` | `auth-cdp click`, `fill`, `hover`, `press-key` |
-| Persistent auth state | supported with shared browser/profile config | dedicated `agent-profile` by default |
+| Persistent auth state | supported with shared browser/profile config | managed `Chrome for Testing` browser-data dir by default |
 | Inspect-first operator handoff | not a built-in product workflow | native `chrome-inspect` runtime |
 | Durable latest selection recovery | not a built-in product workflow | native `inspect-capture latest` |
 

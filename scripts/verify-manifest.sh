@@ -215,22 +215,10 @@ check_install_layout() {
       ;;
   esac
 
-  local mock_app_installer="$home_root/mock-install-agent-profile-chrome-app.sh"
-  cat >"$mock_app_installer" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-mkdir -p "$HOME/Applications"
-app_dir="$HOME/Applications/Agent Profile Chrome.app"
-mkdir -p "$app_dir"
-echo "$app_dir"
-EOF
-  chmod +x "$mock_app_installer"
-
   HOME="$home_root" \
     CHROME_USE_INSTALL_ROOT="$install_root" \
-    CHROME_USE_INSTALL_CHROME_APP_SCRIPT="$mock_app_installer" \
     CHROME_USE_INSTALL_SKIP_PREFLIGHT=1 \
-    bash "$REPO_ROOT/$install_script" --non-interactive --yes >/dev/null
+    bash "$REPO_ROOT/$install_script" --browser system --skip-browser-download --non-interactive --yes >/dev/null
 
   installed=()
   while IFS= read -r -d '' entry; do
@@ -292,6 +280,12 @@ EOF
     log_ok "$install_script installs shared runtime under install root"
   fi
 
+  if [[ -x "$install_root/bin/chrome-use-open-google-chrome" ]]; then
+    log_ok "$install_script installs chrome-use-open-google-chrome wrapper"
+  else
+    log_fail "$install_script must install chrome-use-open-google-chrome wrapper"
+  fi
+
   if [[ ! -d "$install_root/skills/chrome-inspect" || ! -d "$install_root/skills/chrome-auth" ]]; then
     log_fail "$install_script must install managed skills under install root"
   else
@@ -310,87 +304,137 @@ EOF
     else
       log_fail "$install_script must keep Codex metadata for codex target"
     fi
-
-    if [[ -d "$home_root/Applications/Agent Profile Chrome.app" ]]; then
-      log_ok "$install_script auto-installs Agent Profile Chrome app for codex target"
-    else
-      log_fail "$install_script must auto-install Agent Profile Chrome app for codex target"
-    fi
   else
     if [[ -d "$target_root/chrome-inspect/agents" || -d "$target_root/chrome-auth/agents" ]]; then
       log_fail "$install_script must omit Codex metadata for non-codex targets"
     else
       log_ok "$install_script omits Codex metadata for non-codex targets"
     fi
-
-    if [[ -d "$home_root/Applications/Agent Profile Chrome.app" ]]; then
-      log_fail "$install_script must not auto-install Agent Profile Chrome app for non-codex targets"
-    else
-      log_ok "$install_script does not auto-install Agent Profile Chrome app for non-codex targets"
-    fi
   fi
 }
 
-check_chrome_app_installer_flags() {
+check_default_codex_install_prunes_generic_duplicates() {
+  local home_root="$TMP_ROOT/home-default-codex"
+  local install_root="$home_root/.chrome-use"
+  local codex_root="$home_root/.codex/skills"
+  local generic_root="$home_root/.agents/skills"
+  local output_file="$home_root/install.out"
+
+  rm -rf "$home_root"
+  mkdir -p "$codex_root/chrome-inspect" "$codex_root/chrome-auth" "$generic_root/chrome-inspect" "$generic_root/chrome-auth"
+
+  HOME="$home_root" \
+    CHROME_USE_INSTALL_ROOT="$install_root" \
+    CHROME_USE_INSTALL_SKIP_PREFLIGHT=1 \
+    bash "$REPO_ROOT/install/install.sh" --browser system --skip-browser-download --non-interactive --yes >"$output_file"
+
+  if [[ -d "$codex_root/chrome-inspect" && -d "$codex_root/chrome-auth" ]]; then
+    log_ok "default Codex install keeps skills under ~/.codex/skills"
+  else
+    log_fail "default Codex install must keep skills under ~/.codex/skills"
+  fi
+
+  if [[ ! -e "$generic_root/chrome-inspect" && ! -e "$generic_root/chrome-auth" ]]; then
+    log_ok "default Codex install prunes duplicate ~/.agents/skills copies"
+  else
+    log_fail "default Codex install must prune duplicate ~/.agents/skills copies"
+  fi
+
+  if rg -Fq "Removed duplicate installs from unselected targets:" "$output_file"; then
+    log_ok "default Codex install reports pruned duplicate targets"
+  else
+    log_fail "default Codex install must report pruned duplicate targets"
+  fi
+}
+
+check_legacy_chrome_app_flags_are_noops() {
   local home_root="$TMP_ROOT/home-flags"
   local install_root="$home_root/.chrome-use"
   local output_file="$home_root/install.out"
   mkdir -p "$home_root"
 
-  local mock_app_installer="$home_root/mock-install-agent-profile-chrome-app.sh"
-  cat >"$mock_app_installer" <<'EOF'
+  HOME="$home_root" \
+    CHROME_USE_INSTALL_ROOT="$install_root" \
+    CHROME_USE_INSTALL_SKIP_PREFLIGHT=1 \
+    bash "$REPO_ROOT/install/install.sh" --target codex --browser system --skip-browser-download --install-chrome-app --non-interactive --yes >"$output_file"
+
+  if rg -Fq -- '--install-chrome-app is deprecated.' "$output_file"; then
+    log_ok "install/install.sh reports legacy chrome-app flag as deprecated"
+  else
+    log_fail "install/install.sh must warn that --install-chrome-app is deprecated"
+  fi
+
+  if [[ ! -d "$home_root/Applications/Agent Profile Chrome.app" ]]; then
+    log_ok "install/install.sh does not install Agent Profile Chrome app anymore"
+  else
+    log_fail "install/install.sh must not install Agent Profile Chrome app anymore"
+  fi
+}
+
+check_default_install_downloads_cft_browser() {
+  local home_root="$TMP_ROOT/home-cft-download"
+  local install_root="$home_root/.chrome-use"
+  local output_file="$home_root/install.out"
+  local fixture_root="$home_root/cft-fixture"
+  local zip_root="$fixture_root/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS"
+  local zip_path="$fixture_root/chrome-mac-arm64.zip"
+  local json_path="$fixture_root/last-known-good-versions-with-downloads.json"
+  local expected_version="123.0.6312.0"
+  local expected_platform="mac-arm64"
+  local expected_binary="$install_root/browsers/chrome-for-testing/$expected_version/$expected_platform/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+  local expected_channel_file="$install_root/browsers/chrome-for-testing/channels/stable-$expected_platform.txt"
+
+  rm -rf "$home_root"
+  mkdir -p "$zip_root"
+  cat >"$zip_root/Google Chrome for Testing" <<'EOF'
 #!/usr/bin/env bash
-set -euo pipefail
-if [[ "${MOCK_APP_INSTALL_FAIL:-0}" == "1" ]]; then
-  echo "mock install failure" >&2
-  exit 1
-fi
-mkdir -p "$HOME/Applications"
-app_dir="$HOME/Applications/Agent Profile Chrome.app"
-mkdir -p "$app_dir"
-echo "$app_dir"
+exit 0
 EOF
-  chmod +x "$mock_app_installer"
+  chmod +x "$zip_root/Google Chrome for Testing"
+  (
+    cd "$fixture_root"
+    zip -qr "$zip_path" chrome-mac-arm64
+  )
+  cat >"$json_path" <<EOF
+{
+  "channels": {
+    "Stable": {
+      "version": "$expected_version",
+      "downloads": {
+        "chrome": [
+          {
+            "platform": "$expected_platform",
+            "url": "file://$zip_path"
+          }
+        ]
+      }
+    }
+  }
+}
+EOF
 
   HOME="$home_root" \
     CHROME_USE_INSTALL_ROOT="$install_root" \
-    CHROME_USE_INSTALL_CHROME_APP_SCRIPT="$mock_app_installer" \
     CHROME_USE_INSTALL_SKIP_PREFLIGHT=1 \
-    bash "$REPO_ROOT/install/install.sh" --target codex --skip-chrome-app --non-interactive --yes >"$output_file"
+    CHROME_USE_CFT_METADATA_URL="file://$json_path" \
+    bash "$REPO_ROOT/install/install.sh" --target generic --non-interactive --yes >"$output_file"
 
-  if [[ -d "$home_root/Applications/Agent Profile Chrome.app" ]]; then
-    log_fail "install/install.sh must respect --skip-chrome-app for codex target"
+  if [[ -x "$expected_binary" ]]; then
+    log_ok "install/install.sh downloads and extracts managed Chrome for Testing by default"
   else
-    log_ok "install/install.sh respects --skip-chrome-app for codex target"
+    log_fail "install/install.sh must place the managed Chrome for Testing binary under browsers/chrome-for-testing/<version>/<platform>"
   fi
 
-  rm -rf "$home_root/Applications" "$install_root"
-  mkdir -p "$home_root"
-  HOME="$home_root" \
-    CHROME_USE_INSTALL_ROOT="$install_root" \
-    CHROME_USE_INSTALL_CHROME_APP_SCRIPT="$mock_app_installer" \
-    CHROME_USE_INSTALL_SKIP_PREFLIGHT=1 \
-    bash "$REPO_ROOT/install/install.sh" --target generic --install-chrome-app --non-interactive --yes >"$output_file"
-
-  if [[ -d "$home_root/Applications/Agent Profile Chrome.app" ]]; then
-    log_ok "install/install.sh respects --install-chrome-app for generic target"
+  if [[ -f "$expected_channel_file" ]] && [[ "$(cat "$expected_channel_file")" == "$expected_version" ]]; then
+    log_ok "install/install.sh records the resolved stable channel version for runtime lookup"
   else
-    log_fail "install/install.sh must respect --install-chrome-app for generic target"
+    log_fail "install/install.sh must record the resolved stable channel version for runtime lookup"
   fi
 
-  rm -rf "$home_root/Applications" "$install_root"
-  mkdir -p "$home_root"
-  HOME="$home_root" \
-    CHROME_USE_INSTALL_ROOT="$install_root" \
-    CHROME_USE_INSTALL_CHROME_APP_SCRIPT="$mock_app_installer" \
-    CHROME_USE_INSTALL_SKIP_PREFLIGHT=1 \
-    MOCK_APP_INSTALL_FAIL=1 \
-    bash "$REPO_ROOT/install/install.sh" --target codex --non-interactive --yes >"$output_file"
-
-  if rg -Fq "Agent Profile Chrome app install failed; see warning below" "$output_file" && rg -Fq "Could not install Agent Profile Chrome.app automatically" "$output_file"; then
-    log_ok "install/install.sh degrades cleanly when Agent Profile Chrome app install fails"
+  if rg -Fq "\"browserKind\": \"cft\"" "$install_root/install-manifest.json" && rg -Fq "\"browserVersion\": \"$expected_version\"" "$install_root/install-manifest.json"; then
+    log_ok "install/install.sh records browser metadata in install-manifest.json"
   else
-    log_fail "install/install.sh must warn and continue when Agent Profile Chrome app install fails"
+    log_fail "install/install.sh must record browser metadata in install-manifest.json"
   fi
 }
 
@@ -419,7 +463,9 @@ main() {
 
   check_install_layout "install/install-agent-skill.sh" generic
   check_install_layout "install/install-codex-skill.sh" codex
-  check_chrome_app_installer_flags
+  check_default_install_downloads_cft_browser
+  check_default_codex_install_prunes_generic_duplicates
+  check_legacy_chrome_app_flags_are_noops
   check_skill_metadata
   check_startup_url_resolution
   check_wrapper_targets

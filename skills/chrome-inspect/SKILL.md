@@ -1,11 +1,11 @@
 ---
 name: "chrome-inspect"
-description: "Capture a live page selection in a dedicated Chrome profile and stream durable structured context back to the agent."
+description: "Capture a live page selection in the managed Chrome for Testing session and stream durable structured context back to the agent."
 ---
 
 # Chrome Inspect Skill
 
-Use this skill when an agent needs deterministic, inspect-first Chrome DOM work in a dedicated profile. It is designed for the moment when a user can point at the page faster than they can explain it in chat. Instead of asking for pasted URLs or screenshots, `chrome-inspect` waits for the real click, captures the exact target, and returns durable structured context that the agent can act on immediately.
+Use this skill when an agent needs deterministic, inspect-first Chrome DOM work in the managed Chrome for Testing session. It is designed for the moment when a user can point at the page faster than they can explain it in chat. Instead of asking for pasted URLs or screenshots, `chrome-inspect` waits for the real click, captures the exact target, and returns durable structured context that the agent can act on immediately.
 
 Command entrypoints live in this skill's own `scripts/` directory. Resolve the directory that contains this `SKILL.md`, then invoke `<skill-dir>/scripts/open_url.sh`, `<skill-dir>/scripts/inspect-capture`, and `<skill-dir>/scripts/inspect_select_element.sh` directly. Do not assume a repo-root `scripts/` directory contains these public commands.
 
@@ -20,9 +20,9 @@ Command entrypoints live in this skill's own `scripts/` directory. Resolve the d
 2. Never skip repo detection just because the user omitted a URL. If the request is about the current local project, treat the repo as the source of truth and let the shared runtime infer the preview entry before falling back to `about:blank`.
 3. Start local docs web server (for local docs URLs) before opening Chrome when documented. The command wrapper should do this automatically for the detected project webapp entry.
 4. Start or reuse Chrome with the resolved URL through `bash "<skill-dir>/scripts/open_url.sh" "<resolved_url>"`.
-   Reuse must open a new tab on the running dedicated-profile instance instead of starting a second dedicated-profile owner process.
+   Reuse must open a new tab on the running managed Chrome for Testing instance instead of starting a second owner process.
    Reusing an existing matching target does not activate that tab by default; only set `CHROME_USE_ACTIVATE_EXISTING_TARGET=1` for explicit operator-facing flows that must bring it forward.
-   This public entrypoint must first preflight the canonical dedicated runtime and only continue when the endpoint is owned by `agent-profile` on `127.0.0.1:9223`; if needed it should auto-repair by relaunching the canonical runtime before attach.
+   This public entrypoint must first preflight the canonical managed browser runtime and only continue when the endpoint is owned by `Google Chrome for Testing` on `127.0.0.1:9223`; if needed it should auto-repair by relaunching Chrome for Testing before attach.
 5. Use the direct-CDP inspect CLI for selection capture by default:
    - `"<skill-dir>/scripts/inspect-capture" begin --project-root "<repo>"`
      Store both `workflowId` and the returned `targetId`; the workflow is now pinned to that target instead of following a global active tab.
@@ -30,10 +30,10 @@ Command entrypoints live in this skill's own `scripts/` directory. Resolve the d
    - `"<skill-dir>/scripts/inspect-capture" latest` when a later turn asks for the most recent saved selection
      This is a local fast path: read the persisted latest selection directly and skip browser attach, startup URL resolution, repo lookup, and any extra search flow.
    - or the one-shot path: `"<skill-dir>/scripts/inspect_select_element.sh" "<repo>"`
-6. Ensure the session is attached to the dedicated debug endpoint and that the dedicated profile still has exactly one owning Chrome process. Multiple windows are allowed as long as the current workflow remains pinned to its own `targetId`.
+6. Ensure the session is attached to the configured debug endpoint and that Chrome for Testing still has exactly one owning process. Multiple windows are allowed as long as the current workflow remains pinned to its own `targetId`.
 7. The direct inspect runtime should pass the startup URL into the shared runtime so capture prioritizes the freshly opened target instead of attaching unrelated tabs on the same debug endpoint.
 8. Confirm inspect mode is armed, then have the user use the persistent page toolbar to click a target in Chrome.
-   The toolbar is expected to stay injected across reloads, page navigation, and every page tab in the same dedicated profile.
+   The toolbar is expected to stay injected across reloads, page navigation, and every page tab in the same managed browser session.
    On entry, the toolbar should already be injected in the idle ready state, with the primary action labeled `Press this button to inspect`.
    Only after the operator clicks that primary action should the toolbar enter active inspect mode and show `Inspecting`.
    A successful click should automatically exit inspect mode, leave the panel visible, switch the primary action back to `Press this button to inspect`, and return the page to normal interaction so links and navigation work immediately.
@@ -57,7 +57,7 @@ Command entrypoints live in this skill's own `scripts/` directory. Resolve the d
 12. After reporting that richer element context, ask one concrete DOM instruction.
 13. Re-run the same workflow with `"<skill-dir>/scripts/inspect-capture" apply --workflow-id "<workflowId>" --instruction "<user text>"`.
 14. Treat `apply` as ending the capture workflow only.
-    It should not remove the toolbar from the page; the toolbar stays resident in the dedicated profile and the next capture will re-arm inspect mode.
+    It should not remove the toolbar from the page; the toolbar stays resident in the Chrome session and the next capture will re-arm inspect mode.
 15. For a later-turn "what is the latest selection?" recovery request, do not reuse an older cached `workflowId`.
     Call `"<skill-dir>/scripts/inspect-capture" latest` so the reply is sourced from the persisted most recent successful selection.
     Do not open Chrome, resolve the preview URL, attach runtime sessions, or search the repo for this recovery path.
@@ -65,7 +65,7 @@ Command entrypoints live in this skill's own `scripts/` directory. Resolve the d
 ## Toolbar behavior
 
 - The toolbar is persistent across same-tab navigation, reloads, and same-document navigation.
-- Every page tab in the dedicated profile should receive the same injected panel in the idle ready state by default; no tab should auto-enter inspect mode just because it was opened or injected.
+- Every page tab in the managed Chrome for Testing session should receive the same injected panel in the idle ready state by default; no tab should auto-enter inspect mode just because it was opened or injected.
 - The primary action is a toggle:
   - `Inspecting` while inspect mode is active
   - `Press this button to inspect` in idle or after a completed selection
@@ -84,10 +84,10 @@ Command entrypoints live in this skill's own `scripts/` directory. Resolve the d
 ## Tools
 
 ### `<skill-dir>/scripts/open_url.sh`
-Starts or reuses dedicated Chrome, preserves the single-owner dedicated-profile runtime, and prints the active debug URL.
+Starts or reuses the managed Chrome for Testing runtime, preserves the single-owner runtime, and prints the active debug URL.
 
 ### `<skill-dir>/scripts/inspect-capture`
-Runs direct-CDP element capture against the dedicated Chrome debug endpoint without requiring a manual MCP handshake.
+Runs direct-CDP element capture against the Chrome debug endpoint without requiring a manual MCP handshake.
 
 ### `<skill-dir>/scripts/inspect_select_element.sh`
 One-shot helper that opens or reuses the repo preview, arms capture, waits for a fresh click, and prints normalized JSON.
@@ -120,10 +120,10 @@ Expected result:
 
 ## Notes
 
-- Keep the same dedicated profile across sessions with `CHROME_USE_PROFILE_DIR`.
-- The only supported dedicated profile for public workflows is `agent-profile` on `127.0.0.1:9223`.
-- Keep the dedicated `agent-profile` isolated to one Chrome owner process and one debug endpoint; multiple dedicated-profile windows are allowed when workflows stay pinned to different targets.
-- For manual login-state prep or user-created Chrome Web Apps, enter the profile through `Agent Profile Chrome` so the user lands in the same dedicated profile/runtime that inspect will later reuse.
+- Keep the same dedicated browser-data dir across sessions with `CHROME_USE_PROFILE_DIR`.
+- The supported public workflow path is managed `Chrome for Testing` with profile `Default` on `127.0.0.1:9223`.
+- Keep the managed Chrome runtime isolated to one owner process and one debug endpoint; multiple windows are allowed when workflows stay pinned to different targets.
+- For manual login-state prep, launch the same runtime through `chrome-use-open-google-chrome` so the user lands in the same managed browser session/runtime that inspect will later reuse.
 - For explicit mismatches between expected profile/debug endpoint, run `../../../runtime/chrome-use/scripts/doctor.sh` from this skill's `scripts/` directory, or `runtime/chrome-use/scripts/doctor.sh` from the repo root.
 - `about:blank` is the fallback when no URL is supplied.
 - When inspect auto-start is enabled, `open_url.sh` now infers a local project root from the current working directory or git root before using `about:blank`.

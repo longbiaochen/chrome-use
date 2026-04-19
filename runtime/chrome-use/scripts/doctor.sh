@@ -4,7 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/runtime_lib.sh"
 
-echo "Profile: $PROFILE_DIR"
+echo "Profile root: $PROFILE_DIR"
+echo "Profile name: $PROFILE_NAME"
 echo "Debug URL: $DEBUG_URL"
 
 if is_endpoint_ready; then
@@ -24,7 +25,7 @@ if is_endpoint_ready; then
   page_target_count="$(debug_page_target_count)"
 fi
 
-echo "Dedicated PID count: $profile_count"
+echo "Chrome PID count: $profile_count"
 echo "Matching PID count: $matching_count"
 echo "Matching PID(s): ${matching_pids:-none}"
 echo "Profile PID(s): ${profile_pids:-none}"
@@ -33,19 +34,24 @@ echo "Profile owner command(s): ${profile_root_commands:-none}"
 echo "Page target count: ${page_target_count}"
 
 if [[ "$matching_count" -gt 1 ]]; then
-  echo "Status: blocker; multiple dedicated-profile Chrome processes are exposing the canonical debug port"
+  echo "Status: blocker; multiple $(expected_browser_owner_label) owner processes are exposing the configured debug port"
   exit 1
 fi
 
-if [[ "$matching_count" -eq 1 ]]; then
-  echo "Status: dedicated profile is ready"
+if is_endpoint_ready && [[ "$matching_count" -eq 1 ]]; then
+  echo "Status: $(runtime_display_name) is ready"
   exit 0
 fi
 
-if is_endpoint_ready; then
-  echo "Status: blocker; debug endpoint is not owned by the expected profile"
+if [[ "$matching_count" -eq 1 ]] && [[ "$(browser_kind)" == "system" ]] && uses_default_chrome_profile; then
+  echo "Status: blocker; Chrome appears to have ignored remote debugging on the default profile"
   exit 1
 fi
 
-echo "Status: blocker; dedicated profile is not exposing the debug endpoint"
+if is_endpoint_ready; then
+  echo "Status: blocker; debug endpoint is not owned by the expected $(expected_browser_owner_label) profile"
+  exit 1
+fi
+
+echo "Status: blocker; $(expected_browser_owner_label) profile is not exposing the debug endpoint"
 exit 1

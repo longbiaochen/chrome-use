@@ -692,7 +692,7 @@ async function main() {
       targetId: readPreferredTarget(store)?.targetId || null,
     }, 4);
     console.error(
-      `Inspect armed for ${startupUrl || "the current page"}. Click an element in dedicated Chrome, then wait for JSON output.`,
+      `Inspect armed for ${startupUrl || "the current page"}. Click an element in Google Chrome, then wait for JSON output.`,
     );
     const result = await handleInspectAction(
       cdp,

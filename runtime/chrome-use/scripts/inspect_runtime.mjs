@@ -573,8 +573,8 @@ export async function ensureDedicatedBrowserReady(
     );
   } catch (error) {
     const output = `${error.stdout || ""}${error.stderr || ""}`.trim();
-    const message = output || error.message || "Dedicated profile preflight failed.";
-    throw new Error(`Unable to prepare the canonical dedicated profile on ${debugUrl}: ${message}`);
+    const message = output || error.message || "Google Chrome preflight failed.";
+    throw new Error(`Unable to prepare Google Chrome on ${debugUrl}: ${message}`);
   }
 
   await assertDedicatedBrowserOwnership(debugUrl);
@@ -593,7 +593,7 @@ export async function assertDedicatedBrowserOwnership(debugUrl = getDefaultDebug
     await execFile("bash", [doctorScript], { env });
   } catch (error) {
     const output = `${error.stdout || ""}${error.stderr || ""}`.trim();
-    const message = output || error.message || "Dedicated profile ownership check failed.";
+    const message = output || error.message || "Google Chrome ownership check failed.";
     throw new Error(`Refusing to attach to ${debugUrl}: ${message}`);
   }
 }

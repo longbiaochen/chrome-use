@@ -73,6 +73,30 @@ exit 0
 EOF
 chmod +x "$MOCK_BIN/open"
 
+cat >"$MOCK_BIN/google-chrome-for-testing" <<'EOF'
+#!/usr/bin/env bash
+if [[ -n "${MOCK_BROWSER_LAUNCH_LOG:-}" ]]; then
+  printf '%s\n' "$*" >>"$MOCK_BROWSER_LAUNCH_LOG"
+fi
+if [[ -n "${MOCK_OPEN_PS_CONTENT:-}" ]]; then
+  printf '%s\n' "$MOCK_OPEN_PS_CONTENT" >"$MOCK_PS_FILE"
+fi
+exit 0
+EOF
+chmod +x "$MOCK_BIN/google-chrome-for-testing"
+
+cat >"$MOCK_BIN/osascript" <<'EOF'
+#!/usr/bin/env bash
+if [[ -n "${MOCK_OSASCRIPT_LOG:-}" ]]; then
+  printf '%s\n' "$*" >>"$MOCK_OSASCRIPT_LOG"
+fi
+if [[ "${MOCK_OSASCRIPT_CLEARS_PS:-1}" == "1" && -n "${MOCK_PS_FILE:-}" ]]; then
+  : >"$MOCK_PS_FILE"
+fi
+exit 0
+EOF
+chmod +x "$MOCK_BIN/osascript"
+
 cat >"$MOCK_BIN/nohup" <<'EOF'
 #!/usr/bin/env bash
 if [[ -n "${MOCK_NOHUP_LOG:-}" ]]; then
@@ -232,17 +256,23 @@ assert_file_lines() {
 setup_case() {
   CASE_DIR="$(mktemp -d "$TMP_ROOT/case.XXXXXX")"
   export PATH="$MOCK_BIN:$ORIGINAL_PATH"
-  export CHROME_USE_PROFILE_DIR="$CASE_DIR/agent-profile"
+  export CHROME_USE_INSTALL_ROOT="$CASE_DIR/install-root"
+  export CHROME_USE_BROWSER_KIND="cft"
+  export CHROME_USE_PROFILE_DIR="$CHROME_USE_INSTALL_ROOT/browser-data/stable"
+  export CHROME_USE_PROFILE_NAME="Default"
+  export CHROME_USE_CHROME_BIN="$MOCK_BIN/google-chrome-for-testing"
   export CHROME_USE_STATE_DIR="$CASE_DIR/state"
   export CHROME_USE_DEBUG_PORT="9223"
   export CHROME_USE_DEBUG_HOST="127.0.0.1"
   export MOCK_PS_FILE="$CASE_DIR/ps.txt"
   export MOCK_VERSION_COUNT_FILE="$CASE_DIR/version-count.txt"
   export MOCK_OPEN_LOG="$CASE_DIR/open.log"
+  export MOCK_BROWSER_LAUNCH_LOG="$CASE_DIR/browser-launch.log"
   export MOCK_NEW_TAB_LOG="$CASE_DIR/new-tab.log"
   export MOCK_ACTIVATE_LOG="$CASE_DIR/activate.log"
   export MOCK_KILL_LOG="$CASE_DIR/kill.log"
   export MOCK_NOHUP_LOG="$CASE_DIR/nohup.log"
+  export MOCK_OSASCRIPT_LOG="$CASE_DIR/osascript.log"
   export MOCK_UNAME="Darwin"
   export MOCK_ENDPOINT_READY_AFTER="1"
   export MOCK_OPEN_PS_CONTENT=""
@@ -300,25 +330,30 @@ run_ensure_project_webapp() {
 test_launches_dedicated_instance() {
   setup_case
   export MOCK_ENDPOINT_READY_AFTER="2"
-  export MOCK_OPEN_PS_CONTENT="123 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=$CHROME_USE_PROFILE_DIR --remote-debugging-port=9223 about:blank"
+  export MOCK_OPEN_PS_CONTENT="123 /tmp/Google Chrome for Testing --user-data-dir=$CHROME_USE_PROFILE_DIR --profile-directory=Default --remote-debugging-port=9223 about:blank"
 
   run_ensure "https://example.com"
 
   assert_eq "0" "$ENSURE_STATUS" "launch case exits successfully"
   assert_eq "http://127.0.0.1:9223" "$ENSURE_STDOUT" "launch case returns debug URL"
-  assert_file_lines "$MOCK_OPEN_LOG" "1" "launch case invokes Chrome open once"
+  assert_file_lines "$MOCK_BROWSER_LAUNCH_LOG" "1" "launch case launches Chrome for Testing once"
+  assert_contains "--user-data-dir=$CHROME_USE_PROFILE_DIR" "$(cat "$MOCK_BROWSER_LAUNCH_LOG" 2>/dev/null || true)" "launch case passes managed user-data-dir"
+  assert_contains "--profile-directory=Default" "$(cat "$MOCK_BROWSER_LAUNCH_LOG" 2>/dev/null || true)" "launch case passes managed profile name"
+  assert_contains "--remote-debugging-port=9223" "$(cat "$MOCK_BROWSER_LAUNCH_LOG" 2>/dev/null || true)" "launch case passes managed debug port"
+  assert_contains "https://example.com" "$(cat "$MOCK_BROWSER_LAUNCH_LOG" 2>/dev/null || true)" "launch case passes target URL"
+  assert_file_lines "$MOCK_OPEN_LOG" "0" "launch case does not use macOS open helper"
   assert_file_lines "$MOCK_NEW_TAB_LOG" "0" "launch case does not open a follow-up new tab"
 }
 
 test_reuses_running_instance_with_new_tab() {
   setup_case
-  printf '456 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=%s --remote-debugging-port=9223 about:blank\n' "$CHROME_USE_PROFILE_DIR" >"$MOCK_PS_FILE"
+  printf '456 /tmp/Google Chrome for Testing --user-data-dir=%s --profile-directory=Default --remote-debugging-port=9223 about:blank\n' "$CHROME_USE_PROFILE_DIR" >"$MOCK_PS_FILE"
 
   run_ensure "https://example.com/path?q=1"
 
   assert_eq "0" "$ENSURE_STATUS" "reuse case exits successfully"
   assert_eq "http://127.0.0.1:9223" "$ENSURE_STDOUT" "reuse case returns debug URL"
-  assert_file_lines "$MOCK_OPEN_LOG" "0" "reuse case does not relaunch Chrome"
+  assert_file_lines "$MOCK_BROWSER_LAUNCH_LOG" "0" "reuse case does not relaunch Chrome for Testing"
   assert_file_lines "$MOCK_NEW_TAB_LOG" "1" "reuse case opens one new tab"
   assert_file_lines "$MOCK_ACTIVATE_LOG" "0" "reuse case does not activate an existing tab by default"
   assert_contains "/json/new?https%3A%2F%2Fexample.com%2Fpath%3Fq%3D1" "$(cat "$MOCK_NEW_TAB_LOG" 2>/dev/null || true)" "reuse case encodes tab URL"
@@ -327,7 +362,7 @@ test_reuses_running_instance_with_new_tab() {
 test_reuses_existing_target_only_when_activation_is_explicit() {
   setup_case
   export CHROME_USE_ACTIVATE_EXISTING_TARGET="1"
-  printf '456 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=%s --remote-debugging-port=9223 about:blank\n' "$CHROME_USE_PROFILE_DIR" >"$MOCK_PS_FILE"
+  printf '456 /tmp/Google Chrome for Testing --user-data-dir=%s --profile-directory=Default --remote-debugging-port=9223 about:blank\n' "$CHROME_USE_PROFILE_DIR" >"$MOCK_PS_FILE"
   cat >"$MOCK_JSON_LIST_FILE" <<'EOF'
 [{"id":"existing-tab","type":"page","url":"https://example.com/path?q=1"}]
 EOF
@@ -343,31 +378,33 @@ EOF
 test_cleans_stale_profile_process_before_launch() {
   setup_case
   export MOCK_ENDPOINT_READY_AFTER="2"
-  printf '999 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=%s\n' "$CHROME_USE_PROFILE_DIR" >"$MOCK_PS_FILE"
-  export MOCK_OPEN_PS_CONTENT="123 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=$CHROME_USE_PROFILE_DIR --remote-debugging-port=9223 about:blank"
+  printf '999 /tmp/Google Chrome for Testing --user-data-dir=%s --profile-directory=Default\n' "$CHROME_USE_PROFILE_DIR" >"$MOCK_PS_FILE"
+  export MOCK_OPEN_PS_CONTENT="123 /tmp/Google Chrome for Testing --user-data-dir=$CHROME_USE_PROFILE_DIR --profile-directory=Default --remote-debugging-port=9223 about:blank"
 
   run_ensure
 
   assert_eq "0" "$ENSURE_STATUS" "stale cleanup case exits successfully"
-  assert_file_lines "$MOCK_OPEN_LOG" "1" "stale cleanup case relaunches Chrome once"
+  assert_file_lines "$MOCK_OSASCRIPT_LOG" "1" "stale cleanup case asks Chrome for Testing to quit once"
+  assert_contains "Google Chrome for Testing" "$(cat "$MOCK_OSASCRIPT_LOG" 2>/dev/null || true)" "stale cleanup case targets the CfT app name"
+  assert_file_lines "$MOCK_BROWSER_LAUNCH_LOG" "1" "stale cleanup case relaunches Chrome for Testing once"
 }
 
 test_blocks_multiple_dedicated_processes() {
   setup_case
   cat >"$MOCK_PS_FILE" <<EOF
-101 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=$CHROME_USE_PROFILE_DIR --remote-debugging-port=9223
-202 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=$CHROME_USE_PROFILE_DIR --remote-debugging-port=9223
+101 /tmp/Google Chrome for Testing --user-data-dir=$CHROME_USE_PROFILE_DIR --profile-directory=Default --remote-debugging-port=9223
+202 /tmp/Google Chrome for Testing --user-data-dir=$CHROME_USE_PROFILE_DIR --profile-directory=Default --remote-debugging-port=9223
 EOF
 
   run_ensure
 
   assert_eq "1" "$ENSURE_STATUS" "multiple process case fails"
-  assert_contains "exactly one owning process" "$ENSURE_STDERR" "multiple process case explains blocker"
+  assert_contains "exactly one owner process" "$ENSURE_STDERR" "multiple process case explains blocker"
 }
 
 test_allows_single_owner_with_multiple_page_targets() {
   setup_case
-  printf '303 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=%s --remote-debugging-port=9223\n' "$CHROME_USE_PROFILE_DIR" >"$MOCK_PS_FILE"
+  printf '303 /tmp/Google Chrome for Testing --user-data-dir=%s --profile-directory=Default --remote-debugging-port=9223\n' "$CHROME_USE_PROFILE_DIR" >"$MOCK_PS_FILE"
   printf '[{"id":"page-1","type":"page","url":"https://example.com/one"},{"id":"page-2","type":"page","url":"https://example.com/two"}]\n' >"$MOCK_JSON_LIST_FILE"
 
   run_ensure
@@ -378,18 +415,18 @@ test_allows_single_owner_with_multiple_page_targets() {
 
 test_blocks_wrong_endpoint_owner() {
   setup_case
-  printf '404 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=/tmp/other-profile --remote-debugging-port=9223\n' >"$MOCK_PS_FILE"
+  printf '404 /tmp/Google Chrome for Testing --user-data-dir=/tmp/other-profile --profile-directory=Default --remote-debugging-port=9223\n' >"$MOCK_PS_FILE"
 
   run_ensure
 
   assert_eq "1" "$ENSURE_STATUS" "wrong owner case fails"
-  assert_contains "no Chrome process is using the expected profile" "$ENSURE_STDERR" "wrong owner case explains blocker"
+  assert_contains "it is not owned by Google Chrome for Testing with profile Default" "$ENSURE_STDERR" "wrong owner case explains blocker"
 }
 
 test_allows_other_profiles() {
   setup_case
   cat >"$MOCK_PS_FILE" <<EOF
-505 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=$CHROME_USE_PROFILE_DIR --remote-debugging-port=9223
+505 /tmp/Google Chrome for Testing --user-data-dir=$CHROME_USE_PROFILE_DIR --profile-directory=Default --remote-debugging-port=9223
 606 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --profile-directory=Default
 EOF
 
@@ -401,7 +438,7 @@ EOF
 
 test_doctor_reports_ready_state() {
   setup_case
-  printf '707 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=%s --remote-debugging-port=9223\n' "$CHROME_USE_PROFILE_DIR" >"$MOCK_PS_FILE"
+  printf '707 /tmp/Google Chrome for Testing --user-data-dir=%s --profile-directory=Default --remote-debugging-port=9223\n' "$CHROME_USE_PROFILE_DIR" >"$MOCK_PS_FILE"
 
   run_doctor
 
@@ -409,25 +446,25 @@ test_doctor_reports_ready_state() {
   assert_contains "Endpoint: ready" "$DOCTOR_STDOUT" "doctor ready case reports endpoint state"
   assert_contains "Matching PID count: 1" "$DOCTOR_STDOUT" "doctor ready case reports matching pid count"
   assert_contains "Page target count: 0" "$DOCTOR_STDOUT" "doctor ready case reports page target count"
-  assert_contains "Profile owner command(s): /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=$CHROME_USE_PROFILE_DIR --remote-debugging-port=9223" "$DOCTOR_STDOUT" "doctor ready case reports owner command"
-  assert_contains "Status: dedicated profile is ready" "$DOCTOR_STDOUT" "doctor ready case reports success"
+  assert_contains "Profile owner command(s): /tmp/Google Chrome for Testing --user-data-dir=$CHROME_USE_PROFILE_DIR --profile-directory=Default --remote-debugging-port=9223" "$DOCTOR_STDOUT" "doctor ready case reports owner command"
+  assert_contains "Status: Chrome for Testing runtime is ready" "$DOCTOR_STDOUT" "doctor ready case reports success"
 }
 
 test_doctor_reports_multiple_page_targets_as_ready() {
   setup_case
-  printf '808 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=%s --remote-debugging-port=9223\n' "$CHROME_USE_PROFILE_DIR" >"$MOCK_PS_FILE"
+  printf '808 /tmp/Google Chrome for Testing --user-data-dir=%s --profile-directory=Default --remote-debugging-port=9223\n' "$CHROME_USE_PROFILE_DIR" >"$MOCK_PS_FILE"
   printf '[{"id":"page-1","type":"page","url":"https://example.com/one"},{"id":"page-2","type":"page","url":"https://example.com/two"}]\n' >"$MOCK_JSON_LIST_FILE"
 
   run_doctor
 
   assert_eq "0" "$DOCTOR_STATUS" "doctor multiple page target case exits successfully"
   assert_contains "Page target count: 2" "$DOCTOR_STDOUT" "doctor multiple page target case reports target count"
-  assert_contains "Status: dedicated profile is ready" "$DOCTOR_STDOUT" "doctor multiple page target case reports success"
+  assert_contains "Status: Chrome for Testing runtime is ready" "$DOCTOR_STDOUT" "doctor multiple page target case reports success"
 }
 
 test_reports_page_target_count_without_window_probe() {
   setup_case
-  printf '909 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=%s --remote-debugging-port=9223\n' "$CHROME_USE_PROFILE_DIR" >"$MOCK_PS_FILE"
+  printf '909 /tmp/Google Chrome for Testing --user-data-dir=%s --profile-directory=Default --remote-debugging-port=9223\n' "$CHROME_USE_PROFILE_DIR" >"$MOCK_PS_FILE"
   printf '[{"id":"page-1","type":"page","url":"http://127.0.0.1:8000/"}]\n' >"$MOCK_JSON_LIST_FILE"
 
   run_ensure "https://example.com/fallback"
@@ -439,15 +476,15 @@ test_reports_page_target_count_without_window_probe() {
 
   assert_eq "0" "$DOCTOR_STATUS" "doctor page target diagnostic case exits successfully"
   assert_contains "Page target count: 1" "$DOCTOR_STDOUT" "doctor page target diagnostic case reports one page target"
-  assert_contains "Status: dedicated profile is ready" "$DOCTOR_STDOUT" "doctor page target diagnostic case reports ready status"
+  assert_contains "Status: Chrome for Testing runtime is ready" "$DOCTOR_STDOUT" "doctor page target diagnostic case reports ready status"
 }
 
 test_ignores_renderer_helpers_for_process_ownership() {
   setup_case
   cat >"$MOCK_PS_FILE" <<EOF
-707 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=$CHROME_USE_PROFILE_DIR --remote-debugging-port=9223
-708 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/146.0.7680.165/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --user-data-dir=$CHROME_USE_PROFILE_DIR --remote-debugging-port=9223
-709 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/146.0.7680.165/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper --type=gpu-process --user-data-dir=$CHROME_USE_PROFILE_DIR
+707 /tmp/Google Chrome for Testing --user-data-dir=$CHROME_USE_PROFILE_DIR --profile-directory=Default --remote-debugging-port=9223
+708 /tmp/Google Chrome for Testing Helper --type=renderer --user-data-dir=$CHROME_USE_PROFILE_DIR --profile-directory=Default --remote-debugging-port=9223
+709 /tmp/Google Chrome for Testing Helper --type=gpu-process --user-data-dir=$CHROME_USE_PROFILE_DIR --profile-directory=Default
 EOF
 
   run_ensure "https://example.com/helper-test"
@@ -458,10 +495,10 @@ EOF
   run_doctor
 
   assert_eq "0" "$DOCTOR_STATUS" "doctor helper process case exits successfully"
-  assert_contains "Dedicated PID count: 1" "$DOCTOR_STDOUT" "doctor helper process case reports one owner pid"
+  assert_contains "Chrome PID count: 1" "$DOCTOR_STDOUT" "doctor helper process case reports one owner pid"
   assert_contains "Matching PID count: 1" "$DOCTOR_STDOUT" "doctor helper process case reports one matching pid"
   assert_contains "Profile owner PID(s): 707" "$DOCTOR_STDOUT" "doctor helper process case reports browser root pid"
-  assert_contains "Profile owner command(s): /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=$CHROME_USE_PROFILE_DIR --remote-debugging-port=9223" "$DOCTOR_STDOUT" "doctor helper process case reports owner command"
+  assert_contains "Profile owner command(s): /tmp/Google Chrome for Testing --user-data-dir=$CHROME_USE_PROFILE_DIR --profile-directory=Default --remote-debugging-port=9223" "$DOCTOR_STDOUT" "doctor helper process case reports owner command"
 }
 
 test_blocks_project_webapp_restart_on_port_conflict() {

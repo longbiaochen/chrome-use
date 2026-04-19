@@ -19,7 +19,7 @@ The core positioning stays the same:
 
 - no Chrome DevTools MCP dependency for the public default path
 - no screenshot-only auth flow
-- no change to the dedicated profile and shared auth + inspect browser contract
+- no change to the shared auth + inspect browser contract, now centered on managed Chrome for Testing
 
 ## Why this matters
 
@@ -30,7 +30,7 @@ If a user asks an agent to finish login, authorization, or permission-related wo
 - it can search and inspect the live page directly instead of relying on screenshots
 - it can wait for the page to prove that the auth state changed
 - it can tell the operator exactly when human intervention is needed, instead of silently stalling
-- it keeps the whole flow inside the same dedicated browser world so follow-up agent work can continue immediately after login
+- it keeps the whole flow inside the same managed browser world so follow-up agent work can continue immediately after login
 
 The point is not just "browser automation." The point is faster, more natural auth handoff between operator and agent without screenshot-driven guesswork.
 

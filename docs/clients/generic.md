@@ -28,16 +28,18 @@ AGENT_SKILLS_ROOT="$HOME/.agents/skills" bash install/install.sh --target generi
 Environment defaults:
 
 ```bash
-export CHROME_USE_PROFILE_DIR="$HOME/.chrome-use/agent-profile"
+export CHROME_USE_BROWSER_KIND="cft"
+export CHROME_USE_CFT_CHANNEL="stable"
+export CHROME_USE_PROFILE_DIR="$HOME/.chrome-use/browser-data/stable"
 export CHROME_USE_DEBUG_PORT="9223"
 ```
 
-`agent-profile` on `127.0.0.1:9223` is the only supported dedicated runtime for public `chrome-use` skills.
+Managed `Chrome for Testing` on `127.0.0.1:9223` is the supported public runtime for `chrome-use` skills.
 Every public inspect/auth attach now runs a strict preflight first:
 
-- if the canonical dedicated runtime is already healthy, continue immediately
-- otherwise auto-repair by launching/reusing the canonical `agent-profile` owner process on port `9223`
-- re-run ownership checks and block hard if the endpoint is still owned by the wrong profile, wrong port, or multiple owner processes
+- if the canonical managed browser runtime is already healthy, continue immediately
+- otherwise auto-repair by launching/reusing the canonical Chrome for Testing owner process on port `9223`
+- re-run ownership checks and block hard if the endpoint is still owned by the wrong runtime, wrong port, or multiple owner processes
 
 `chrome-auth` resolves startup URL with:
 
@@ -60,12 +62,8 @@ The install exposes only these public skills:
 
 Both public skills may trigger explicitly or implicitly. `/chrome` and `/inspect` are not installed as commands.
 
-For manual login-state preparation or user-created Chrome Web Apps, install the dedicated macOS launcher:
+For manual login-state preparation, use the bootstrap wrapper:
 
 ```bash
-bash scripts/install-agent-profile-chrome-app.sh
+~/.chrome-use/bin/chrome-use-open-google-chrome
 ```
-
-Generic installs do not create the app automatically; use this script or `bash install/install.sh --target generic --install-chrome-app` when you want the Dock entry.
-This adds `Agent Profile Chrome`, which always opens the canonical `agent-profile` runtime so users can prepare auth state and create profile-scoped Web Apps from the same dedicated profile that agents will later inspect and manipulate.
-The app bundle itself lives at `~/Applications/Agent Profile Chrome.app`, not under `~/.chrome-use`.

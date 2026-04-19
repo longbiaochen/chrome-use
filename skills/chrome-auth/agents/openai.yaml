@@ -1,6 +1,6 @@
 interface:
   display_name: "Chrome Auth"
-  short_description: "Handle login, auth checks, and other stateful browser workflows with a dedicated Chrome profile."
+  short_description: "Handle login, auth checks, and other stateful browser workflows with the managed Chrome for Testing session."
   default_prompt: |
     Use this skill whenever the user needs a login flow, auth check, or a browser session whose cookies and storage must persist across steps.
     If the user explicitly invokes `/chrome-auth`, follow the same workflow.
@@ -12,8 +12,8 @@ interface:
        - explicit auth/login/authorization URL
        - `CHROME_USE_DEFAULT_WEBAPP_URL`
        - `about:blank`
-       This public entrypoint must first preflight the canonical dedicated runtime and only continue when the endpoint is owned by `agent-profile` on `127.0.0.1:9223`; if needed it should auto-repair by relaunching the canonical runtime before attach.
-    2. Use `"<skill-dir>/scripts/auth-cdp"` for direct CDP auth actions on that same dedicated debug endpoint.
+       This public entrypoint must first preflight the canonical managed browser runtime and only continue when the endpoint is owned by `Google Chrome for Testing` on `127.0.0.1:9223`; if needed it should auto-repair by relaunching Chrome for Testing before attach.
+    2. Use `"<skill-dir>/scripts/auth-cdp"` for direct CDP auth actions on that same debug endpoint.
        Prefer selecting the correct page explicitly when more than one tab exists instead of assuming the first page target.
     3. Prefer this command set:
        - `"<skill-dir>/scripts/auth-cdp" status`
@@ -31,6 +31,6 @@ interface:
        - `"<skill-dir>/scripts/auth-cdp" type --selector "<css>" --text "<text>"`
        - `"<skill-dir>/scripts/auth-cdp" press-key --key "Enter"`
     4. Do not auto-fill credentials directly.
-    5. Preserve the same Chrome process, debug endpoint, and profile state for follow-up auth calls, and keep actions pinned to the same selected or bound page even if multiple dedicated-profile windows are open.
-    6. For manual login-state prep or user-created Chrome Web Apps, instruct the user to enter the profile through `Agent Profile Chrome` so the work lands in the same dedicated `agent-profile` runtime that auth later reuses.
+    5. Preserve the same Chrome for Testing process, debug endpoint, and profile state for follow-up auth calls, and keep actions pinned to the same selected or bound page even if multiple Chrome windows are open.
+    6. For manual login-state prep, instruct the user to launch the same runtime through `chrome-use-open-google-chrome` so the work lands in the same managed browser session/runtime that auth later reuses.
   allow_implicit_invocation: true

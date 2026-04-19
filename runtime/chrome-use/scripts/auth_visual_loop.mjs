@@ -496,7 +496,7 @@ function renderLoginPage({ message = "" } = {}) {
       <h2>Runner path</h2>
       <ul>
         <li>Wait for the login screen explicitly.</li>
-        <li>Fill both fields in the same dedicated profile.</li>
+        <li>Fill both fields in the same managed browser session.</li>
         <li>Submit and verify the dashboard state.</li>
       </ul>`,
   });
@@ -524,7 +524,7 @@ function renderDashboardPage(name, email) {
     aside: `
       <h2>Why this matters</h2>
       <ul>
-        <li>The login state now lives in the same dedicated browser the next step can reuse.</li>
+        <li>The login state now lives in the same managed browser the next step can reuse.</li>
         <li>The user sees the full auth loop finish cleanly.</li>
       </ul>`,
   });
@@ -875,12 +875,12 @@ async function clickPageSelector(debugUrl, pageId, selector) {
 async function assertDedicatedProfile(debugUrl) {
   assertCondition(debugUrl === canonicalDebugUrl, `Expected canonical debug URL ${canonicalDebugUrl}, got ${debugUrl}.`);
   const doctor = runShellScript(path.join(__dirname, "doctor.sh"));
-  assertCondition(doctor.includes("Profile: /Users/longbiao/.chrome-use/agent-profile"), "Doctor did not report the canonical agent profile.", doctor);
+  assertCondition(doctor.includes("Profile root:"), "Doctor did not report the Chrome profile root.", doctor);
   assertCondition(doctor.includes("Debug URL: http://127.0.0.1:9223"), "Doctor did not report the canonical debug URL.", doctor);
   assertCondition(doctor.includes("Endpoint: ready"), "Doctor did not report a ready debug endpoint.", doctor);
-  assertCondition(doctor.includes("Dedicated PID count: 1"), "Doctor did not report a single dedicated profile owner.", doctor);
+  assertCondition(doctor.includes("Chrome PID count: 1"), "Doctor did not report a single Chrome owner.", doctor);
   assertCondition(doctor.includes("Page target count:"), "Doctor did not report page target diagnostics.", doctor);
-  assertCondition(doctor.includes("Status: dedicated profile is ready"), "Doctor did not report a ready dedicated profile.", doctor);
+  assertCondition(doctor.includes("Status: Google Chrome default profile is ready"), "Doctor did not report a ready Chrome profile.", doctor);
 }
 
 async function main() {
