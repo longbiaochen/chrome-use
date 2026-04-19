@@ -17,6 +17,7 @@ launch_chrome() {
 
   case "$os" in
     macos)
+      local app_bundle=""
       local args=(
         --user-data-dir="$PROFILE_DIR"
         --profile-directory="$PROFILE_NAME"
@@ -27,7 +28,16 @@ launch_chrome() {
       if [[ -n "$START_URL" ]]; then
         args+=("$START_URL")
       fi
-      "$chrome_bin" "${args[@]}" >>"$LOG_FILE" 2>&1 &
+      case "$chrome_bin" in
+        *.app/Contents/MacOS/*)
+          app_bundle="${chrome_bin%/Contents/MacOS/*}"
+          ;;
+      esac
+      if [[ -n "$app_bundle" && -d "$app_bundle" ]]; then
+        open -g -a "$app_bundle" --args "${args[@]}"
+      else
+        nohup "$chrome_bin" "${args[@]}" >>"$LOG_FILE" 2>&1 </dev/null &
+      fi
       ;;
     linux)
       local args=(
@@ -40,7 +50,7 @@ launch_chrome() {
       if [[ -n "$START_URL" ]]; then
         args+=("$START_URL")
       fi
-      "$chrome_bin" "${args[@]}" >>"$LOG_FILE" 2>&1 &
+      nohup "$chrome_bin" "${args[@]}" >>"$LOG_FILE" 2>&1 </dev/null &
       ;;
     windows)
       echo "Windows is not yet tested for chrome-use. Set CHROME_USE_CHROME_BIN and adapt the launcher before claiming support." >&2

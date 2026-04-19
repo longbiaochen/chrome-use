@@ -279,9 +279,9 @@ setup_case() {
   export MOCK_JSON_LIST_FILE="$CASE_DIR/json-list.json"
   export MOCK_LSOF_OUTPUT_FILE="$CASE_DIR/lsof.txt"
   export MOCK_LSOF_STATUS="1"
+  export MOCK_NOHUP_BEHAVIOR="exec"
   unset MOCK_HTTP_REACHABLE_URL
   unset MOCK_HTTP_REACHABLE_FILE
-  unset MOCK_NOHUP_BEHAVIOR
   unset MOCK_NOHUP_TOUCH_FILE
 
   : >"$MOCK_PS_FILE"
@@ -336,6 +336,7 @@ test_launches_dedicated_instance() {
 
   assert_eq "0" "$ENSURE_STATUS" "launch case exits successfully"
   assert_eq "http://127.0.0.1:9223" "$ENSURE_STDOUT" "launch case returns debug URL"
+  assert_file_lines "$MOCK_NOHUP_LOG" "1" "launch case detaches Chrome for Testing through nohup"
   assert_file_lines "$MOCK_BROWSER_LAUNCH_LOG" "1" "launch case launches Chrome for Testing once"
   assert_contains "--user-data-dir=$CHROME_USE_PROFILE_DIR" "$(cat "$MOCK_BROWSER_LAUNCH_LOG" 2>/dev/null || true)" "launch case passes managed user-data-dir"
   assert_contains "--profile-directory=Default" "$(cat "$MOCK_BROWSER_LAUNCH_LOG" 2>/dev/null || true)" "launch case passes managed profile name"
