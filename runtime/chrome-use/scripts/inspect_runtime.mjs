@@ -1242,6 +1242,11 @@ async function resolveSelectedElementPayload(
     nodeId = backendNodeId;
   }
 
+  const toolbarOwned = await isToolbarOwnedSelection(activeCdp, sessionId, nodeId, backendNodeId);
+  if (toolbarOwned) {
+    return null;
+  }
+
   const [describeResult, boxResult, outerResult, elementPath] = await Promise.all([
     sendDomCommandWithRecovery(activeCdp, sessionId, state, domCacheKey, "DOM.describeNode", { nodeId }),
     sendDomCommandWithRecovery(activeCdp, sessionId, state, domCacheKey, "DOM.getBoxModel", { nodeId }).catch(() => null),
@@ -1428,6 +1433,41 @@ async function sendDomCommandWithRecovery(activeCdp, sessionId, state, domCacheK
     state.domReadyBySessionKey.delete(cacheKey);
     await ensureDomReady(activeCdp, sessionId, state, cacheKey);
     return activeCdp.send(method, params, sessionId);
+  }
+}
+
+async function isToolbarOwnedSelection(activeCdp, sessionId, nodeId, backendNodeId) {
+  let objectId = null;
+  try {
+    const resolved = await activeCdp.send(
+      "DOM.resolveNode",
+      nodeId ? { nodeId } : { backendNodeId },
+      sessionId,
+    );
+    objectId = resolved?.object?.objectId || null;
+    if (!objectId) {
+      return false;
+    }
+    const result = await activeCdp.send("Runtime.callFunctionOn", {
+      objectId,
+      functionDeclaration: `function () {
+        const value = this;
+        const element =
+          value instanceof Element
+            ? value
+            : (value && value.parentElement instanceof Element ? value.parentElement : null);
+        return !!(element && element.closest('[data-chrome-inspect-toolbar]'));
+      }`,
+      returnByValue: true,
+      awaitPromise: true,
+    }, sessionId);
+    return !!result?.result?.value;
+  } catch {
+    return false;
+  } finally {
+    if (objectId) {
+      await safeSend(activeCdp, "Runtime.releaseObject", { objectId }, sessionId);
+    }
   }
 }
 
@@ -2495,6 +2535,9 @@ async function resolveLiveSelectionIfFresh(state, cdp, workflow) {
     return null;
   }
   const payload = await materializeSelectionPayloadWithRecovery(cdp, state, state.lastSelectionEvent);
+  if (!payload) {
+    return null;
+  }
   if (!payload.captureToken) {
     payload.captureToken = workflow.captureToken || null;
   }
@@ -2522,7 +2565,10 @@ async function resolveLatestSelection(state, cdp, waitForSelectionMs, timeoutMs,
       start,
     );
     if (selection && isSelectionEventFreshForWorkflow(selection, workflow)) {
-      return materializeSelectionPayloadWithRecovery(cdp, state, selection);
+      const payload = await materializeSelectionPayloadWithRecovery(cdp, state, selection);
+      if (payload) {
+        return payload;
+      }
     }
 
     for (const targetId of getSelectionCandidateTargetIds(state, workflow)) {
@@ -2776,6 +2822,38 @@ async function awaitWorkflowSelection(state, cdp, workflowId, waitForSelectionMs
           }
         }
       }
+      const latestWorkflow = await readWorkflow(state.store, workflowId);
+      if (isSelectionReady(latestWorkflow) && latestWorkflow?.payload && isSelectionFreshForWorkflow({
+        workflowId: latestWorkflow.workflowId,
+        payload: latestWorkflow.payload,
+        captureToken: latestWorkflow.captureToken || latestWorkflow.payload?.captureToken || null,
+      }, latestWorkflow)) {
+        const finalized = await persistWorkflowState(state.store, state, workflowId, {
+          status: "awaiting_user_instruction",
+          phase: "awaiting_user_instruction",
+          payload: latestWorkflow.payload,
+          selectedElement: latestWorkflow.payload.selectedElement,
+          position: latestWorkflow.payload.position,
+          page: latestWorkflow.payload.page,
+          summary: latestWorkflow.summary || inspectSummary(latestWorkflow.payload),
+          selectionSource: latestWorkflow.selectionSource || latestWorkflow.payload.selectionSource || null,
+        });
+        unbindWorkflow(state, workflowId);
+        if (latestWorkflow.targetId) {
+          await applyToolbarStateForTarget(cdp, state, latestWorkflow.targetId, {
+            workflowId,
+            captureToken: finalized.captureToken || finalized.payload?.captureToken || null,
+            mode: "idle_selected",
+            cancelled: false,
+            captureActive: false,
+            selectedDetails: buildToolbarSelectionDetails(finalized.payload),
+            collapsed: false,
+            reason: "await_selection_ready_after_race",
+          });
+        }
+        await persistSessionState(state.store, state, { status: hasActiveWorkflows(state) ? "waiting_for_selection" : "bridge_ready" });
+        return workflowToAwaitingPayload(finalized, state.store);
+      }
       workflow = await persistWorkflowState(state.store, state, workflowId, {
         status: "waiting_for_selection",
         phase: "waiting_for_selection",
@@ -2966,6 +3044,35 @@ export async function handleInspectAction(cdp, state, args, messageId) {
 async function recordSelectionForWorkflow(cdp, state, selection) {
   const payload = await materializeSelectionPayloadWithRecovery(cdp, state, selection);
   const captureMeta = selection.targetId ? state.captureMetaByTargetId.get(selection.targetId) : null;
+  if (!payload) {
+    const workflowId = selection.workflowId || captureMeta?.workflowId || null;
+    const captureToken = selection.captureToken || captureMeta?.captureToken || null;
+    logSignal("selection_ignored_for_toolbar", {
+      workflowId,
+      captureToken,
+      targetId: selection.targetId || null,
+    });
+    if (selection.targetId) {
+      updateCaptureMetaForTarget(state, selection.targetId, {
+        workflowId,
+        captureToken,
+        mode: "inspecting",
+        cancelled: false,
+        captureActive: true,
+      });
+      await applyToolbarStateForTarget(cdp, state, selection.targetId, {
+        workflowId,
+        captureToken,
+        mode: "inspecting",
+        cancelled: false,
+        captureActive: true,
+        selectedDetails: null,
+        collapsed: false,
+        reason: "toolbar_selection_ignored",
+      });
+    }
+    return null;
+  }
   const boundWorkflowId =
     selection.workflowId ||
     captureMeta?.workflowId ||

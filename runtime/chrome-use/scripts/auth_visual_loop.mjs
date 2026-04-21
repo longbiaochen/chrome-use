@@ -880,7 +880,7 @@ async function assertDedicatedProfile(debugUrl) {
   assertCondition(doctor.includes("Endpoint: ready"), "Doctor did not report a ready debug endpoint.", doctor);
   assertCondition(doctor.includes("Chrome PID count: 1"), "Doctor did not report a single Chrome owner.", doctor);
   assertCondition(doctor.includes("Page target count:"), "Doctor did not report page target diagnostics.", doctor);
-  assertCondition(doctor.includes("Status: Google Chrome default profile is ready"), "Doctor did not report a ready Chrome profile.", doctor);
+  assertCondition(doctor.includes("Status: Chrome for Testing runtime is ready"), "Doctor did not report a ready Chrome profile.", doctor);
 }
 
 async function main() {

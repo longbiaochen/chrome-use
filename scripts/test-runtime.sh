@@ -781,6 +781,8 @@ test_inspect_runtime_source_tracks_navigation_rearm() {
   assert_contains "<span data-role=\"label\">Element</span>" "$runtime_source" "inspect runtime exposes element path section"
   assert_contains "elementPath" "$runtime_source" "inspect runtime derives element tree paths for toolbar display"
   assert_contains "selection_ignored_for_inactive_workflow" "$runtime_source" "inspect runtime ignores stale selections from other workflows"
+  assert_contains "selection_ignored_for_toolbar" "$runtime_source" "inspect runtime ignores toolbar-owned overlay selections"
+  assert_contains "closest('[data-chrome-inspect-toolbar]')" "$runtime_source" "inspect runtime detects toolbar-owned nodes via DOM ancestry"
   assert_contains "status: \"selection_received\"" "$runtime_source" "inspect runtime persists active workflow selection immediately"
   assert_contains "selection-history.jsonl" "$runtime_source" "inspect runtime persists selection history as JSONL"
   assert_contains "\"get_latest_selection\"" "$runtime_source" "inspect runtime exposes latest persisted selection recovery"
@@ -807,6 +809,12 @@ test_visual_loop_assets_exist() {
     log_fail "inspect visual loop script is missing"
   fi
 
+  if [[ -f "$RUNTIME_ROOT/scripts/inspect_await_click_order_test.mjs" ]]; then
+    log_ok "inspect await click-order test script exists"
+  else
+    log_fail "inspect await click-order test script is missing"
+  fi
+
   if [[ -f "$RUNTIME_ROOT/fixtures/inspect-visual/index.html" ]]; then
     log_ok "inspect visual fixture index exists"
   else
@@ -826,6 +834,11 @@ test_auth_visual_assets_exist() {
   else
     log_fail "auth visual loop script is missing"
   fi
+
+  local auth_visual_source
+  auth_visual_source="$(cat "$RUNTIME_ROOT/scripts/auth_visual_loop.mjs")"
+  assert_contains "Status: Chrome for Testing runtime is ready" "$auth_visual_source" "auth visual loop checks current doctor ready status"
+  assert_not_contains "Status: Google Chrome default profile is ready" "$auth_visual_source" "auth visual loop does not check obsolete doctor ready status"
 
   local build_script
   build_script="$(cat "$REPO_ROOT/scripts/build-readme-gif.sh")"
