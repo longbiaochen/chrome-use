@@ -24,6 +24,7 @@ launch_chrome() {
         --remote-debugging-port="$DEBUG_PORT"
         --no-first-run
         --no-default-browser-check
+        --disable-infobars
       )
       if [[ -n "$START_URL" ]]; then
         args+=("$START_URL")
@@ -46,6 +47,7 @@ launch_chrome() {
         --remote-debugging-port="$DEBUG_PORT"
         --no-first-run
         --no-default-browser-check
+        --disable-infobars
       )
       if [[ -n "$START_URL" ]]; then
         args+=("$START_URL")

@@ -341,6 +341,7 @@ test_launches_dedicated_instance() {
   assert_contains "--user-data-dir=$CHROME_USE_PROFILE_DIR" "$(cat "$MOCK_BROWSER_LAUNCH_LOG" 2>/dev/null || true)" "launch case passes managed user-data-dir"
   assert_contains "--profile-directory=Default" "$(cat "$MOCK_BROWSER_LAUNCH_LOG" 2>/dev/null || true)" "launch case passes managed profile name"
   assert_contains "--remote-debugging-port=9223" "$(cat "$MOCK_BROWSER_LAUNCH_LOG" 2>/dev/null || true)" "launch case passes managed debug port"
+  assert_contains "--disable-infobars" "$(cat "$MOCK_BROWSER_LAUNCH_LOG" 2>/dev/null || true)" "launch case suppresses Chrome for Testing infobars"
   assert_contains "https://example.com" "$(cat "$MOCK_BROWSER_LAUNCH_LOG" 2>/dev/null || true)" "launch case passes target URL"
   assert_file_lines "$MOCK_OPEN_LOG" "0" "launch case does not use macOS open helper"
   assert_file_lines "$MOCK_NEW_TAB_LOG" "0" "launch case does not open a follow-up new tab"

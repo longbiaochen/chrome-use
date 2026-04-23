@@ -377,6 +377,7 @@ check_default_install_downloads_cft_browser() {
   local output_file="$home_root/install.out"
   local fixture_root="$home_root/cft-fixture"
   local zip_root="$fixture_root/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS"
+  local helper_root="$fixture_root/chrome-mac-arm64/Google Chrome for Testing.app/Contents/Frameworks/Google Chrome for Testing Framework.framework/Versions/123.0.6312.0/Helpers/Google Chrome for Testing Helper.app/Contents/MacOS"
   local zip_path="$fixture_root/chrome-mac-arm64.zip"
   local json_path="$fixture_root/last-known-good-versions-with-downloads.json"
   local expected_version="123.0.6312.0"
@@ -385,12 +386,17 @@ check_default_install_downloads_cft_browser() {
   local expected_channel_file="$install_root/browsers/chrome-for-testing/channels/stable-$expected_platform.txt"
 
   rm -rf "$home_root"
-  mkdir -p "$zip_root"
+  mkdir -p "$zip_root" "$helper_root"
   cat >"$zip_root/Google Chrome for Testing" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
   chmod +x "$zip_root/Google Chrome for Testing"
+  cat >"$helper_root/Google Chrome for Testing Helper" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  chmod +x "$helper_root/Google Chrome for Testing Helper"
   (
     cd "$fixture_root"
     zip -qr "$zip_path" chrome-mac-arm64

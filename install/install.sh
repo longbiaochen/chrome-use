@@ -263,10 +263,49 @@ ensure_system_chrome_available() {
 ensure_browser_download_dependencies() {
   local missing=()
   command -v curl >/dev/null 2>&1 || missing+=("curl")
-  command -v unzip >/dev/null 2>&1 || missing+=("unzip")
   command -v node >/dev/null 2>&1 || missing+=("node")
+  if [[ "$(platform)" == "macos" ]]; then
+    command -v ditto >/dev/null 2>&1 || missing+=("ditto")
+  else
+    command -v unzip >/dev/null 2>&1 || missing+=("unzip")
+  fi
   if (( ${#missing[@]} > 0 )); then
     echo "Missing required tools for Chrome for Testing download: ${missing[*]}" >&2
+    exit 1
+  fi
+}
+
+extract_cft_archive() {
+  local archive_path="$1"
+  local destination="$2"
+
+  if [[ "$(platform)" == "macos" ]]; then
+    ditto -x -k "$archive_path" "$destination"
+  else
+    unzip -q "$archive_path" -d "$destination"
+  fi
+}
+
+validate_cft_extract() {
+  local browser_binary="$1"
+  local version="$2"
+  local platform_root="$3"
+  local app_root
+  local helper_binary
+
+  if [[ ! -x "$browser_binary" ]]; then
+    echo "Extracted Chrome for Testing binary is missing or not executable: $browser_binary" >&2
+    exit 1
+  fi
+
+  if [[ "$(platform)" != "macos" ]]; then
+    return 0
+  fi
+
+  app_root="${platform_root}/$(cft_archive_dir)/Google Chrome for Testing.app"
+  helper_binary="${app_root}/Contents/Frameworks/Google Chrome for Testing Framework.framework/Versions/${version}/Helpers/Google Chrome for Testing Helper.app/Contents/MacOS/Google Chrome for Testing Helper"
+  if [[ ! -x "$helper_binary" ]]; then
+    echo "Extracted Chrome for Testing app bundle is incomplete: missing helper app at $helper_binary" >&2
     exit 1
   fi
 }
@@ -387,7 +426,7 @@ install_managed_cft_browser() {
 
     ensure_browser_download_dependencies
     mkdir -p "${platform_root}" "${CFT_CHANNELS_ROOT}"
-    tmp_zip="$(mktemp "${TMPDIR:-/tmp}/chrome-for-testing.XXXXXX.zip")"
+    tmp_zip="$(mktemp "${TMPDIR:-/tmp}/chrome-for-testing.XXXXXX")"
     rm -rf "${platform_root}"
     mkdir -p "${platform_root}"
     if ! curl -fsSL "$download_url" -o "$tmp_zip"; then
@@ -395,12 +434,13 @@ install_managed_cft_browser() {
       echo "Could not download Chrome for Testing from $download_url" >&2
       exit 1
     fi
-    if ! unzip -q "$tmp_zip" -d "${platform_root}"; then
+    if ! extract_cft_archive "$tmp_zip" "${platform_root}"; then
       rm -f "$tmp_zip"
       echo "Could not extract Chrome for Testing archive $tmp_zip" >&2
       exit 1
     fi
     rm -f "$tmp_zip"
+    validate_cft_extract "$BROWSER_BINARY_RESOLVED" "$version" "$platform_root"
     if [[ "$(platform)" == "macos" ]]; then
       xattr -cr "${platform_root}" >/dev/null 2>&1 || true
     fi
